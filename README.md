@@ -10,25 +10,30 @@ HMI to make feeding system automated
 A wall mounted system makes the space usage small.
 Modular plant solution to make life easy
 
+# Scope
+This project is meant to be a sprint during the month of November. 
+Expectations:
+ - Mechanical system proven out:
+     - 
 
 # System Requirements
 ## Main System Requirements
-- 
-
-## Embedded System Requirements
--
+-  
 
 ## Mechanical System Requirements
--
+- 
 
 ## Electrical System Requirements
--
+- 
+
+## Software Requirements
+- 
 
 ## Plant Pod Requirements
--
+- 
 
 ## Plant Row System Requirements
--
+- 
 
 # Build
 ## Mechanical - Plant Pod
