@@ -13,8 +13,13 @@ Modular plant solution to make life easy
 # Scope
 This project is meant to be a sprint during the month of November. 
 Expectations:
- - Mechanical system proven out:
-     - 
+- Electrical system fully functioning
+- Plant pods functioning, at least 3 created
+- Plant rows functioning, at least 2 created
+- Watering control loop fully functioning
+- Lighting set to On/Off, individual plant control not in scope
+- HMI functioning to select water amount
+- Fault LED functioning for low fluid sensor
 
 # System Requirements
 ## Main System Requirements
