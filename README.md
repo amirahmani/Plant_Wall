@@ -21,32 +21,11 @@ Expectations:
 - HMI functioning to select water amount
 - Fault LED functioning for low fluid sensor
 
-# System Requirements
+# Planning
 ## Main System Requirements
 -  
 
-## Mechanical System Requirements
-- 
 
-## Electrical System Requirements
-- 
-
-## Software Requirements
-- 
-
-## Plant Pod Requirements
-- 
-
-## Plant Row System Requirements
-- 
 
 # Build
-## Mechanical - Plant Pod
 
-## Mechanical - Plant Row
-
-## Electrical - HMI
-
-## Electrical - Main Board
-
-# Testing
