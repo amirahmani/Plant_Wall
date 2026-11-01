@@ -50,12 +50,38 @@ Expectations:
 - Look good
 
 ### Sub-System: Electrical
-#### Main Mechanical Subsystem Requirements:
+#### Main Electrical Subsystem Requirements:
+- 12V power for valves
+- 12V power for pump
+- 3.3-12V power for Hygrometers
+- 5-24V for flow meter
+- HMI
+  - Clock using 4 digit 7 segment display
+  - LCD display for user interaction
+  - D-pad or Analog stick for user control
+  - 2x buttons for user control
+
 #### Future Requirements
 
-### Sub-System: Mechanical
-#### Main Mechanical Software Requirements:
-#### Future Requirements
+### Sub-System: Software
+#### Main Software Subsystem Requirements:
+- Built in RUST
+- Control row lights based on timer for prove out project
+- Control loop from Hygrometer:
+  - Control pump for water flow
+  - Control valves for individual plant pod control
+  - Flow rate input for modeling and knowledge of water amount - removes need for valves at every row
+  - Hygrometer input for soil humidity level
+- HMI:
+  - Settings are able to be saved
+  - Select watering amount
+  - Select lighting, in time
+  - Current time shown
+  - Selectable time of day to water
+
+#### Future Requirements:
+- Selectable profiles for the type of plant it is
+- Control loop for lighting with sensor for lighting amount
 
 # Build
 
