@@ -22,9 +22,20 @@ Expectations:
 - Fault LED functioning for low fluid sensor
 
 # Planning
-## Main System Requirements
--  
-
+## Main Plant Wall System Requirements
+- Limited user inputs needed
+  - Plant the plant in the Plant Pod, connect the hygrometer wire
+  - Plant Pod simple to move from one Plant Row to another
+  - Select how much water, and, light(TBD), feed time
+  - Fill the water reservoir when LED flashes for it
+  - Empty the drip tray if needed
+- Safety: if the power goes out, water doesn't flow
+- Prove out with 2 rows, 3 plant pods
+## Future Requirements:
+- Visual: I want it to physically look good
+- Lights per pod with proper control loops and light guiding
+- 5 plants per row
+- Water tank to feed for minimum of 1 week with full fill
 
 
 # Build
