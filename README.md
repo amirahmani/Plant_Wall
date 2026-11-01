@@ -22,7 +22,9 @@ Expectations:
 - Fault LED functioning for low fluid sensor
 
 # Planning
-## Main Plant Wall System Requirements
+## Requirements
+### System: Plant Wall
+#### Main Plant Wall System Requirements
 - Limited user inputs needed
   - Plant the plant in the Plant Pod, connect the hygrometer wire
   - Plant Pod simple to move from one Plant Row to another
@@ -31,12 +33,29 @@ Expectations:
   - Empty the drip tray if needed
 - Safety: if the power goes out, water doesn't flow
 - Prove out with 2 rows, 3 plant pods
-## Future Requirements:
+#### Future Requirements:
 - Visual: I want it to physically look good
 - Lights per pod with proper control loops and light guiding
 - 5 plants per row
 - Water tank to feed for minimum of 1 week with full fill
 
+### Sub-System: Mechanical
+#### Main Mechanical Subsystem Requirements:
+- Use of common hardware for ease of repair
+- Valves to be normally closed to limit power draw, or allow water though when power loss
+- Easy refill option
+- Pod install/uninstall to be quick and easy
+#### Future Requirements
+- Adjustable height for the plant row to accommodate different sized plants
+- Look good
+
+### Sub-System: Electrical
+#### Main Mechanical Subsystem Requirements:
+#### Future Requirements
+
+### Sub-System: Mechanical
+#### Main Mechanical Software Requirements:
+#### Future Requirements
 
 # Build
 
