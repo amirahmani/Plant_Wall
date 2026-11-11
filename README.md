@@ -85,3 +85,15 @@ Expectations:
 
 # Build
 
+
+
+
+### Creating a parameter file
+Parameters to include:
+- 
+
+### Creating a datalog system to tune the parameters
+- List of signals to trace?
+- How to define? A2L?
+- 
+
