@@ -44,6 +44,25 @@ const TYPES: &[(&str, &str)] = &[
     ("P_SYSCHK_STEP_MS", "u32"),
     ("P_SYSCHK_MIN_LPM", "f32"),
     ("P_SYSCHK_MAX_LPM", "f32"),
+    ("P_LIGHT_HOURS", "u8"), 
+    ("P_LIGHT_START_H", "u8"),
+    ("P_JOY_MAX_OFFSET", "u16"),
+    ("P_FS_JOY_RESET", "u8"),
+    ("P_PID_KP", "f32"), 
+    ("P_PID_KI", "f32"), 
+    ("P_PID_KD", "f32"), 
+    ("P_PID_I_MAX", "f32"),
+    ("P_DOSE_MIN_ML", "f32"), 
+    ("P_DOSE_MAX_ML", "f32"),
+    ("P_DEADBAND_PCT", "u8"), 
+    ("P_MAX_CYCLES", "u8"),
+    ("P_PRECONTROL_MS", "u32"),
+    ("P_SLOWDOWN_MS", "u32"),
+    ("P_HOLD_SAMPLE_S", "u32"),
+    ("P_HOLD_STEADY_PCT", "u8"),
+    ("P_HOLD_STEADY_COUNT", "u8"), 
+    ("P_HOLD_MAX_S", "u32"),
+    ("P_LEVEL_DEBOUNCE_MS", "u32")
 ];
 
 struct Entry {

@@ -12,34 +12,37 @@ Joystick
   - Joystick X connected to PA0 / Arduino A0
   - Joystick Y connected to PA1 / Arduino A1
   - Button connected to PA10 (internal pull-up) / Arduino D2
-  - 5V input
+  - 3.3V input
 LED's
-  - LED HMI (fault blink, sys check) connected to PB5 / Arduino D4
+  - LED HMI (red, on the case) connected to PB5 / Arduino D4
+      fast flash (2 Hz) = LOW WATER, slow blink (0.5 Hz) = other fault
 LCD - I2C 16x2
   - SCL connected to PB8 / Arduino D15
   - SDA connected to PB9 / Arduino D14
-  - 3.3V input
+  - 5V input
 ----------------------------------------------------------------------
 
 Control Loop:
 
-
 Wall layout: 2 rows, 3 plants per row (6 plant pods)
 
-Moisture sensors (capacitive v1.2/v2.0 with TLC555, AOUT pin, powered from 3.3V through the switch below)
-  Each AOUT input needs a 100k pull-down resistor to GND, so an unplugged
-  sensor reads ~0 instead of floating (used by plant_pod_installed).
+Moisture sensors (capacitive v1.2/v2.0, AOUT pin, VCC straight to 5V, always powered:
+  no exposed metal, so no corrosion and no need to switch them off between readings)
+  Each AOUT input needs a 100k pull-down resistor to GND (board side of the connector),
+  so an unplugged sensor reads ~0 instead of floating (used by plant_pod_installed).
+  The ADC pins are NOT 5V tolerant: AOUT must stay below 3.3V. Boards with the
+  onboard 3.3V regulator (662K) are fine; otherwise use a 10k/20k divider per
+  input (its 20k to GND then also acts as the pull-down).
   - Sensor 0 (Row 1 Plant 1) connected to PA4 / Arduino A2
   - Sensor 1 (Row 1 Plant 2) connected to PB0 / Arduino A3
   - Sensor 2 (Row 1 Plant 3) connected to PC1 / Arduino A4
   - Sensor 3 (Row 2 Plant 1) connected to PC0 / Arduino A5
   - Sensor 4 (Row 2 Plant 2) connected to PB1 (Morpho CN10)
   - Sensor 5 (Row 2 Plant 3) connected to PC2 (Morpho CN7)
-  - Sensor power: PB3 / Arduino D3 -> P-MOSFET gate (LOW = sensors on), shared by all
-  - Spare analog pins: PC3, PC4, PC5, PA5, PA6, PA7.
+  - Spare analog pins: PC3, PC4, PC5, PA5.
     PA2/PA3 are the ST-LINK USB serial, keep them free.
 Flow meter - hall effect, 5V powered
-  - Signal connected to PC8 (through 10k/20k divider)
+  - Signal connected to PC8 (10kOhm pull up connected from Analog to 5V)
   - 5V input
 Valves (GPIO out, HIGH = open)
   - Valve Row 1 Plant 1 connected to PB4 / Arduino D5 w/ MOSFET
@@ -52,6 +55,24 @@ Valves (GPIO out, HIGH = open)
 Motor / pump (GPIO out, HIGH = on)
   - Motor connected to PC6 (Morpho CN10) w/ MOSFET
   - 12V input
+Grow lights, one per pod (GPIO out, HIGH = on). On/off for a set number of hours
+per day from the pod's Lt setting, starting at P_LIGHT_START_H.
+Lt is shown and set in hours, three steps from P_LIGHT_HOURS (8H / 12H / 16H).
+  - Light Row 1 Plant 1 connected to PA6 / Arduino D12 w/ MOSFET
+  - Light Row 1 Plant 2 connected to PA7 / Arduino D11 w/ MOSFET
+  - Light Row 1 Plant 3 connected to PB12 (Morpho CN10) w/ MOSFET
+  - Light Row 2 Plant 1 connected to PB13 (Morpho CN10) w/ MOSFET
+  - Light Row 2 Plant 2 connected to PB14 (Morpho CN10) w/ MOSFET
+  - Light Row 2 Plant 3 connected to PB15 (Morpho CN10) w/ MOSFET
+  - 5V input (logic-level N-MOSFET low side, 100k gate pull-down)
+Water level sensor (limit / float switch in the reservoir)
+  - One switch terminal to PB3 / Arduino D3, the other to GND.
+    PB3 uses the internal pull-up, so no resistor is needed.
+  - Mount it so the switch is CLOSED while there is enough water.
+    That way a broken or unplugged wire also shows the LOW WATER warning.
+  - LOW WATER is a warning only: watering and SYS CHECK keep running.
+    The case LED flashes fast and the LCD shows "LOW WATER REFILL" (when no
+    watering status or fault is being shown). Clears by itself after a refill.
 ----------------------------------------------------------------------
 
 Controls:
@@ -59,8 +80,12 @@ Controls:
   Hold 1 s             Browse/Edit: open MENU / any menu screen: back to browse
                        during SYS CHECK: abort (pump off, all valves closed)
   MENU (up/down to pick, click to select, left to go back):
-    RELEARN     re-read all hygrometers now and show which pods are found
+    RELEARN     re-read all sensors now and show which pods are found; with
+                P_FS_JOY_RESET = 1 it also learns the joystick center (keep hands
+                off the stick) and saves it
     SYS CHECK   LED 1 s, pump alone 0.5 s (leak check), then each valve 0.5 s with flow check
+    CALIBRATE   live sensor voltages for all pods; up/down picks a pod, right moves to
+                LOW (dry) / HI (wet), click stores the current reading (saved to flash)
     CLOCK       set the time of day (lost on power loss; until set, watering
                 falls back to every P_WATER_INTERVAL_S from power-up)
     WATER TIME  daily watering time (saved to flash)
@@ -81,11 +106,6 @@ mod lcd;
 //Allow plant settings to be saved
 mod settings;
 
-// Adding the parameter file to tune from
-#[allow(dead_code, non_upper_case_globals)]
-mod params {
-    include!(concat!(env!("OUT_DIR"), "/params.rs"));
-}
 
 // Halt on panic
 use panic_halt as _; // panic handler
@@ -104,73 +124,16 @@ use stm32f4xx_hal::{
 };
 use crate::hal::{pac, pac::interrupt, prelude::*};
 use crate::lcd::Lcd;
-use crate::params::*;
-use crate::settings::{Store, CELLS, EXTRA};
+// Everything hardware-independent (layout, calibration, PID, settings format, ...)
+// lives in the plant_logic crate, where it is unit-tested on the PC.
+use plant_logic::params::*;
+use plant_logic::*;
+use crate::settings::Store;
 
 // LCD constants
 const LCD_ADDR: u8 = 0x27;
 
-// ---------------------------------------------------------------
-// LAYOUT: edit this section when plants, sensors or valves change
-// ---------------------------------------------------------------
-
-// Rows on the wall, and how many plants each row has (1..=MAX_PLANTS).
-// Final wall: 2 rows of 3. Pods that aren't plugged in are detected at runtime
-// (plant_pod_installed) and shown as "--".
-const ROWS: usize = 2;
-const MAX_PLANTS: usize = 3;
-
-const PLANTS_PER_ROW: [usize; ROWS] = [3, 3];
-
-// Hardware wired (must match the pins set up in main). Whether each sensor
-// is actually plugged in is checked at runtime, see plant_pod_installed().
-const SENSORS: usize = 6; // ADC channels wired
-const VALVES: usize = 6;  // valve outputs set up in main
-
-// Sensors that have calibration in params.dcm. Sensors past this count are
-// treated as not installed until their dry/wet values are added.
-const CALIBRATED: usize = P_MOISTURE_DRY.len();
-
-// Which hygrometer & valve belongs to each plant: Some(index) or None if not wired.
-// [row][plant], so SENSOR_OF[0][2] is R1 P3.
-const SENSOR_OF: [[Option<usize>; MAX_PLANTS]; ROWS] = [
-    [Some(0), Some(1), Some(2)],
-    [Some(3), Some(4), Some(5)],
-];
-const VALVE_OF: [[Option<usize>; MAX_PLANTS]; ROWS] = [
-    [Some(0), Some(1), Some(2)],
-    [Some(3), Some(4), Some(5)],
-];
-
-// Compile-time check of the layout above
-const fn layout_ok() -> bool {
-    let mut r = 0;
-    while r < ROWS {
-        let n = PLANTS_PER_ROW[r];
-        if n == 0 || n > MAX_PLANTS {
-            return false;
-        }
-        let mut p = 0;
-        while p < MAX_PLANTS {
-            if let Some(s) = SENSOR_OF[r][p] {
-                if s >= SENSORS || p >= n {
-                    return false; // sensor index out of range, or on a plant that doesn't exist
-                }
-            }
-            if let Some(v) = VALVE_OF[r][p] {
-                if v >= VALVES || p >= n {
-                    return false;
-                }
-            }
-            p += 1;
-        }
-        r += 1;
-    }
-    true
-}
-const _: () = assert!(layout_ok(), "LAYOUT error: check PLANTS_PER_ROW, SENSOR_OF and VALVE_OF");
-
-// LCD columns where the Wtr and Lt values start on line 2 ("R1 P1 LOW LOW")
+// LCD columns where the Wtr and Lt values start on line 2 ("R1 P1 50% 12H")
 // PARAMETER!! (move when .dcm integrated)
 const WATER_COL: u8 = 6;
 const LIGHT_COL: u8 = 10;
@@ -185,19 +148,6 @@ const FLOW_SHOW_MIN_LPM: f32 = 0.05;
 
 // Daily water time used until one is saved from the WATER TIME menu
 const DEFAULT_WATER_TIME: (u8, u8) = (7, 0);
-
-const SECONDS_PER_DAY: u32 = 86_400;
-
-// Catch params.dcm mistakes at compile time. The array length can be smaller than
-// the physical sensor count when some probes are not fitted yet; we still keep
-// the ADC channels wired in place and only use the valid calibration range.
-const _: () = assert!(P_MOISTURE_DRY.len() == P_MOISTURE_WET.len(), "MOISTURE_DRY and MOISTURE_WET must have the same length");
-const _: () = assert!(P_MOISTURE_DRY.len() <= SENSORS, "MOISTURE calibration arrays cannot exceed the sensor count");
-const _: () = assert!(P_MOISTURE_DRY.len() > 0, "MOISTURE calibration arrays must not be empty");
-const _: () = assert!(P_MOISTURE_SAMPLES > 0, "MOISTURE_SAMPLES must be at least 1");
-const _: () = assert!(P_TARGET_MOISTURE.len() == 3, "TARGET_MOISTURE needs LOW, MED, HI");
-const _: () = assert!(P_WATER_STAGES.len() > 0, "WATER_STAGES needs at least one stage");
-const _: () = assert!(P_SYSCHK_STEP_MS > 0, "SYSCHK_STEP_MS must be above 0");
 
 // ---------------------------------------------------------------
 // Flow meter: counted in the EXTI interrupt
@@ -247,130 +197,14 @@ macro_rules! read_avg {
     }};
 }
 
-/// Is a hygrometer actually plugged in on this channel?
-///   Unplugged sensor: the 100k pull-down holds the pin near 0    -> below P_HYGRO_MIN_RAW
-///   Faulty / out-of-range output (above the reading in air)       -> above P_HYGRO_MAX_RAW
-/// Anything in between is a real soil reading.
-/// (A capacitive sensor pulled out of the soil reads as very dry, not as unplugged.)
-fn hygro_detected(raw: u16) -> bool {
-    raw >= P_HYGRO_MIN_RAW && raw <= P_HYGRO_MAX_RAW
-}
+// Joystick timing used by RELEARN (direction decoding is in plant_logic::joystick)
+const JOY_SETTLE_TICKS: u32 = 100; // ignore the first 300 ms after the click (thumb leaving the stick)
+const JOY_MIN_SAMPLES: u32 = 100; // at least 0.5 s of samples to average
 
-/// A plant pod is installed when the plant exists in the layout, its hygrometer
-/// is wired, calibrated and currently detected, and it has a valve.
-/// Only installed pods can be edited and watered; the rest show "--".
-fn plant_pod_installed(row: usize, plant: usize, hygro_ok: &[bool; SENSORS]) -> bool {
-    if row >= ROWS || plant >= PLANTS_PER_ROW[row] {
-        return false;
-    }
-    match (SENSOR_OF[row][plant], VALVE_OF[row][plant]) {
-        (Some(s), Some(_)) => s < CALIBRATED && hygro_ok[s],
-        _ => false,
-    }
-}
-
-/// Raw ADC reading -> 0..100 % moisture, using that sensor's dry/wet calibration.
-fn moisture_pct(raw: u16, dry: u16, wet: u16) -> u8 {
-    let (raw, dry, wet) = (raw as i32, dry as i32, wet as i32);
-    if dry == wet {
-        return 0; // uncalibrated, avoid dividing by zero
-    }
-    let pct = (dry - raw) * 100 / (dry - wet);
-    pct.clamp(0, 100) as u8
-}
-
-// ---------------------------------------------------------------
-// Plant adjustable settings
-// ---------------------------------------------------------------
-
-#[derive(Clone, Copy, PartialEq)]
-enum WaterLevel {
-    Low,
-    Med,
-    High,
-}
-
-// Thinking of changing to an actual value instaed of low/med/high, need more info from the plants themselves
-impl WaterLevel {
-    fn as_str(self) -> &'static str {
-        match self {
-            WaterLevel::Low => "LOW",
-            WaterLevel::Med => "MED",
-            WaterLevel::High => "HI",
-        }
-    }
-
-    // One step up, stops at High
-    fn up(self) -> Self {
-        match self {
-            WaterLevel::Low => WaterLevel::Med,
-            WaterLevel::Med | WaterLevel::High => WaterLevel::High,
-        }
-    }
-
-    // One step down, stops at Low
-    fn down(self) -> Self {
-        match self {
-            WaterLevel::High => WaterLevel::Med,
-            WaterLevel::Med | WaterLevel::Low => WaterLevel::Low,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum LightLevel {
-    Low,
-    Med,
-    High,
-}
-
-impl LightLevel {
-    fn as_str(self) -> &'static str {
-        match self {
-            LightLevel::Low => "LOW",
-            LightLevel::Med => "MED",
-            LightLevel::High => "HI",
-        }
-    }
-
-    fn up(self) -> Self {
-        match self {
-            LightLevel::Low => LightLevel::Med,
-            LightLevel::Med | LightLevel::High => LightLevel::High,
-        }
-    }
-
-    fn down(self) -> Self {
-        match self {
-            LightLevel::High => LightLevel::Med,
-            LightLevel::Med | LightLevel::Low => LightLevel::Low,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Dir {
-    Center,
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-fn read_dir(x: u16, y: u16) -> Dir {
-    // If a direction is reversed on your module, swap the matching pair here.
-    if y < P_Joystick_LOW {
-        Dir::Up
-    } else if y > P_Joystick_HIGH {
-        Dir::Down
-    } else if x < P_Joystick_LOW {
-        Dir::Left
-    } else if x > P_Joystick_HIGH {
-        Dir::Right
-    } else {
-        Dir::Center
-    }
-}
+// Function switch P_FS_JOY_RESET to enabl;e or diable the relearning funct. 
+//   1 = ON, 0 = OFF, uses the 2048.
+const FS_JOY_RESET: bool = P_FS_JOY_RESET != 0;
+const _: () = assert!(P_FS_JOY_RESET <= 1, "P_FS_JOY_RESET must be 0 (off) or 1 (on)");
 
 // Which value is being edited
 #[derive(Clone, Copy, PartialEq)]
@@ -392,12 +226,26 @@ impl Field {
 // Menu / screens
 // ---------------------------------------------------------------
 
-const MENU: [&str; 5] = ["RELEARN", "SYS CHECK", "CLOCK", "WATER TIME", "EXIT"];
+const MENU: [&str; 6] = ["RELEARN", "SYS CHECK", "CALIBRATE", "CLOCK", "WATER TIME", "EXIT"];
 const MENU_RELEARN: usize = 0;
 const MENU_SYSCHECK: usize = 1;
-const MENU_CLOCK: usize = 2;
-const MENU_WATER_TIME: usize = 3;
-// MENU[4] = EXIT: any other item goes back to browsing
+const MENU_CALIBRATE: usize = 2;
+const MENU_CLOCK: usize = 3;
+const MENU_WATER_TIME: usize = 4;
+// MENU[5] = EXIT: any other item goes back to browsing
+
+// LCD columns on the CALIBRATE screen ("R1P1 1.1V LOW HI")
+const CAL_NAME_COL: u8 = 0;
+const CAL_LOW_COL: u8 = 10;
+const CAL_HI_COL: u8 = 14;
+
+/// Selected column on the CALIBRATE screen
+#[derive(Clone, Copy, PartialEq)]
+enum CalCol {
+    Name, // just picking a pod
+    Low,  // click stores the current reading as LOW (dry)
+    High, // click stores the current reading as HI (wet)
+}
 
 /// Which time the time editor is setting
 #[derive(Clone, Copy, PartialEq)]
@@ -426,209 +274,26 @@ enum Mode {
     Browse,
     Edit(Field),
     Menu(usize),
-    Relearn { reads: u32 }, // waiting for a fresh hygrometer reading
+    Relearn { reads: u32, start_n: u32 }, // waiting for a fresh sensor reading + joystick samples
     RelearnResult,
     SysCheck { step: Sys, start_n: u32, start_pulses: u32 },
     SysResult,
+    Calibrate { sel: usize, top: usize, col: CalCol }, // sel = selected line, top = first visible line
     SetTime { what: TimeSet, hh: u8, mm: u8, field: TimeField },
 }
-
-// ---------------------------------------------------------------
-// Saving plant settings: one byte per plant
-//   bits 0-1 = water, bits 2-3 = light   (0 = LOW, 1 = MED, 2 = HI)
-//   0xFF = nothing saved for that plant
-// Extra bytes: water time hour, minute
-// ---------------------------------------------------------------
-
-type Plants = [[(WaterLevel, LightLevel); MAX_PLANTS]; ROWS];
-
-const _: () = assert!(ROWS * MAX_PLANTS <= CELLS, "too many plants for the settings record");
-const _: () = assert!(EXTRA >= 2, "settings record needs 2 extra bytes for the water time");
-
-fn pack(plants: &Plants) -> [u8; CELLS] {
-    let mut cells = [0xFF; CELLS];
-    for r in 0..ROWS {
-        for p in 0..MAX_PLANTS {
-            let (water, light) = plants[r][p];
-            let w = match water {
-                WaterLevel::Low => 0,
-                WaterLevel::Med => 1,
-                WaterLevel::High => 2,
-            };
-            let l = match light {
-                LightLevel::Low => 0,
-                LightLevel::Med => 1,
-                LightLevel::High => 2,
-            };
-            cells[r * MAX_PLANTS + p] = w | (l << 2);
-        }
-    }
-    cells
+/// Save plant settings, water time, menu calibration and joystick center together
+/// (one flash record). The byte layout is in plant_logic::packing.
+fn save_all(
+    store: &mut Store,
+    plants: &Plants,
+    water_time: (u8, u8),
+    cal_dry: &Cal,
+    cal_wet: &Cal,
+    joy_center: (u16, u16),
+) -> bool {
+    store.save(&pack(plants), &pack_extra(water_time, cal_dry, cal_wet, joy_center))
 }
 
-fn unpack(cells: &[u8; CELLS], plants: &mut Plants) {
-    for r in 0..ROWS {
-        for p in 0..MAX_PLANTS {
-            let c = cells[r * MAX_PLANTS + p];
-            let water = match c & 0b11 {
-                0 => WaterLevel::Low,
-                1 => WaterLevel::Med,
-                2 => WaterLevel::High,
-                _ => continue, // 0xFF or invalid: keep the default
-            };
-            let light = match (c >> 2) & 0b11 {
-                0 => LightLevel::Low,
-                1 => LightLevel::Med,
-                2 => LightLevel::High,
-                _ => continue,
-            };
-            plants[r][p] = (water, light);
-        }
-    }
-}
-
-/// Save plant settings and the water time together (one flash record).
-fn save_all(store: &mut Store, plants: &Plants, water_time: (u8, u8)) -> bool {
-    let mut extra = [0xFF; EXTRA];
-    extra[0] = water_time.0;
-    extra[1] = water_time.1;
-    store.save(&pack(plants), &extra)
-}
-
-// -----------------------------------------------------------------------------
-// control loop for each plant
-// -----------------------------------------------------------------------------
-//
-// Once a day at the WATER TIME (or every P_WATER_INTERVAL_S while the clock
-// isn't set), go through the plants one at a time (in series).
-// For each plant below its target moisture, water in stages:
-//
-//   stage 1: water up to  75% of target   (P_WATER_STAGES[0])
-//            wait P_SOAK_S, re-measure; still below target?
-//   stage 2: water up to  95% of target   (P_WATER_STAGES[1])
-//            wait, re-measure; still below?
-//   stage 3: water up to 105% of target
-//            wait, re-measure; still below?
-//   stage 4: water up to 115% of target
-//            wait, re-measure; still below? -> NOT WET fault, next plant
-//
-// "Water up to X%" = pump the volume for the gap between current moisture and
-// X% of target: gap (%) * P_ML_PER_PCT, measured with the flow meter.
-// Each pump run also stops on P_PUMP_MAX_S (timeout) or no flow (fault).
-// Stages that are already met are skipped.
-//
-// It's a state machine stepped every 100 ms, so the display, joystick
-// and flow meter keep running the whole time.
-// ---------------------------------------------------------------
-
-// Plants are numbered row by row: index = row * MAX_PLANTS + plant
-const PLANT_SLOTS: usize = ROWS * MAX_PLANTS;
-
-fn row_plant(idx: usize) -> (usize, usize) {
-    (idx / MAX_PLANTS, idx % MAX_PLANTS)
-}
-
-/// Sensor and valve of a plant, only if its pod is installed.
-fn sensor_valve(idx: usize, hygro_ok: &[bool; SENSORS]) -> Option<(usize, usize)> {
-    let (r, p) = row_plant(idx);
-    if !plant_pod_installed(r, p, hygro_ok) {
-        return None;
-    }
-    match (SENSOR_OF[r][p], VALVE_OF[r][p]) {
-        (Some(s), Some(v)) => Some((s, v)),
-        _ => None,
-    }
-}
-
-/// Valve of a plant regardless of the sensor, so a valve can always be closed
-/// even if its hygrometer is unplugged mid-watering.
-fn valve_of(idx: usize) -> Option<usize> {
-    let (r, p) = row_plant(idx);
-    if r >= ROWS {
-        return None;
-    }
-    VALVE_OF[r][p]
-}
-
-/// Valve of a plant that exists in the layout (used by sys check, which tests
-/// the plumbing whether or not a hygrometer is plugged in).
-fn wired_valve(idx: usize) -> Option<usize> {
-    let (r, p) = row_plant(idx);
-    if r >= ROWS || p >= PLANTS_PER_ROW[r] {
-        return None;
-    }
-    VALVE_OF[r][p]
-}
-
-/// Next plant at or after `from` with a wired valve.
-fn next_wired_valve(from: usize) -> Option<usize> {
-    (from..PLANT_SLOTS).find(|&i| wired_valve(i).is_some())
-}
-
-/// Moisture % the user's Wtr setting asks for.
-fn target_pct(level: WaterLevel) -> u8 {
-    match level {
-        WaterLevel::Low => P_TARGET_MOISTURE[0],
-        WaterLevel::Med => P_TARGET_MOISTURE[1],
-        WaterLevel::High => P_TARGET_MOISTURE[2],
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Water {
-    Idle,
-    // Compare moisture with target, pick the next stage
-    Check { idx: usize, stage: usize },
-    // Pump running until `goal` flow pulses have been delivered
-    Pumping { idx: usize, stage: usize, start_s: u32, start_pulses: u32, goal: u32 },
-    // Waiting for the water to reach the sensor
-    Soaking { idx: usize, stage: usize, until_s: u32 },
-    // Waiting for a fresh moisture reading
-    Measuring { idx: usize, stage: usize, reads: u32 },
-}
-
-/// First installed pod at or after `from`, or Idle when the run is done.
-fn water_from(from: usize, hygro_ok: &[bool; SENSORS]) -> Water {
-    match (from..PLANT_SLOTS).find(|&i| sensor_valve(i, hygro_ok).is_some()) {
-        Some(idx) => Water::Check { idx, stage: 0 },
-        None => Water::Idle,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Fault {
-    NoFlow(usize),     // pump ran but the flow meter saw nothing
-    NotReached(usize), // all stages used and still below target
-}
-
-// ---------------------------------------------------------------
-// Display helpers
-// ---------------------------------------------------------------
-
-/// One character per plant, rows separated by '|', e.g. "111|1-1|---".
-/// Returned as a fixed buffer + length so it works without an allocator.
-fn plant_map(f: impl Fn(usize) -> u8) -> ([u8; 16], usize) {
-    let mut buf = [b' '; 16];
-    let mut len = 0;
-    for r in 0..ROWS {
-        if r > 0 && len < buf.len() {
-            buf[len] = b'|';
-            len += 1;
-        }
-        for p in 0..PLANTS_PER_ROW[r] {
-            if len < buf.len() {
-                buf[len] = f(r * MAX_PLANTS + p);
-                len += 1;
-            }
-        }
-    }
-    (buf, len)
-}
-
-/// Seconds since midnight -> (hours, minutes)
-fn hh_mm(tod: u32) -> (u8, u8) {
-    ((tod / 3600) as u8, ((tod / 60) % 60) as u8)
-}
 
 #[entry]
 fn main() -> ! {
@@ -656,21 +321,24 @@ fn main() -> ! {
         let y_pin = gpioa.pa1.into_analog();
         let sw = gpioa.pa10.into_pull_up_input(); // button pulls to GND when pressed
 
-        // Hygrometer inputs + power switch (starts OFF: gate high = P-MOSFET off)
+        // Moisture sensor inputs (sensors are always powered)
         let m0_pin = gpioa.pa4.into_analog(); // R1 P1
         let m1_pin = gpiob.pb0.into_analog(); // R1 P2
         let m2_pin = gpioc.pc1.into_analog(); // R1 P3
         let m3_pin = gpioc.pc0.into_analog(); // R2 P1
         let m4_pin = gpiob.pb1.into_analog(); // R2 P2
         let m5_pin = gpioc.pc2.into_analog(); // R2 P3
-        let mut sensor_pwr = gpiob.pb3.into_push_pull_output_in_state(PinState::High);
 
         // ADC1, 12-bit by default (shared by joystick and hygrometers)
         let mut adc = Adc::new(dp.ADC1, true, AdcConfig::default(), &mut rcc);
 
         // Fault LED
         let mut led_hmi = gpiob.pb5.into_push_pull_output();
-        let mut led_on = true;
+
+        // Water level switch: PB3 to GND, internal pull-up (closed = pin low)
+        let level_sw = gpiob.pb3.into_pull_up_input();
+        let mut low_water = level_is_low(level_sw.is_low()); // start from the real state, no debounce wait
+        let mut level_ticks: u32 = 0; // how long the switch has disagreed with `low_water`
 
         // Valves: all closed at startup. Index = valve number (see VALVE_OF).
         // Set one with valves[i].set_high() / set_low().
@@ -685,6 +353,16 @@ fn main() -> ! {
 
         // Motor / pump: off at startup
         let mut pump = gpioc.pc6.into_push_pull_output_in_state(PinState::Low);
+
+        // Grow lights: off at startup, switched by the 1000 ms task. Index = light number (see LIGHT_OF).
+        let mut lights = [
+            gpioa.pa6.into_push_pull_output_in_state(PinState::Low).erase(),  // 0: R1 P1
+            gpioa.pa7.into_push_pull_output_in_state(PinState::Low).erase(),  // 1: R1 P2
+            gpiob.pb12.into_push_pull_output_in_state(PinState::Low).erase(), // 2: R1 P3
+            gpiob.pb13.into_push_pull_output_in_state(PinState::Low).erase(), // 3: R2 P1
+            gpiob.pb14.into_push_pull_output_in_state(PinState::Low).erase(), // 4: R2 P2
+            gpiob.pb15.into_push_pull_output_in_state(PinState::Low).erase(), // 5: R2 P3
+        ];
 
         // Flow meter: interrupt on every rising edge of PC8
         let mut syscfg = dp.SYSCFG.constrain(&mut rcc);
@@ -705,15 +383,26 @@ fn main() -> ! {
 
         // Plant settings: [row][plant] = (water, light). Sized for MAX_PLANTS per row,
         // only the first PLANTS_PER_ROW[row] entries are used.
-        // Loaded from flash if saved before, otherwise every plant starts at MED/MED.
-        let mut plants: Plants = [[(WaterLevel::Med, LightLevel::Med); MAX_PLANTS]; ROWS];
+        // Loaded from flash if saved before, otherwise every plant starts at 50 % / middle light step.
+        let mut plants: Plants = [[(WATER_DEFAULT, LightLevel::Med); MAX_PLANTS]; ROWS];
         let mut water_time: (u8, u8) = DEFAULT_WATER_TIME; // daily watering time (HH, MM)
+        // Calibration set from the CALIBRATE menu (CAL_UNSET = use params.dcm)
+        let mut cal_dry: Cal = [CAL_UNSET; SENSORS];
+        let mut cal_wet: Cal = [CAL_UNSET; SENSORS];
+        // Joystick center learned by RELEARN (X, Y)
+        let mut joy_center: (u16, u16) = (JOY_IDEAL_CENTER, JOY_IDEAL_CENTER);
         let (mut store, saved) = Store::open(dp.FLASH, MAX_PLANTS as u8);
-        if let Some((cells, extra)) = saved {
-            unpack(&cells, &mut plants);
-            if extra[0] < 24 && extra[1] < 60 {
-                water_time = (extra[0], extra[1]); // older records have 0xFF here: keep default
+        if let Some((cells, extra, version)) = saved {
+            if version >= 4 {
+                unpack(&cells, &mut plants);
+            } else {
+                unpack_v3(&cells, &mut plants); // older record: convert LOW/MED/HI to %
             }
+            if extra[0] < 24 && extra[1] < 60 {
+                water_time = (extra[0], extra[1]); // 0xFF = never set: keep default
+            }
+            (cal_dry, cal_wet) = unpack_cal(&extra);
+            joy_center = unpack_joy(&extra);
         }
         let mut save_failed = false;
 
@@ -730,9 +419,17 @@ fn main() -> ! {
         let mut menu_msg: Option<&'static str> = None; // e.g. "BUSY: WATERING"
         let long_press_ticks: u32 = (P_LONG_PRESS_MS / TICK_MS).max(1);
 
+        // Joystick center learning (RELEARN)
+        let mut joy_sum: (u32, u32) = (0, 0);
+        let mut joy_samples: u32 = 0;
+        let mut joy_learn_ok = false; // result of the last RELEARN, for the result screen
+
         // Sensor state
         let mut moisture: [u8; SENSORS] = [0; SENSORS]; // percent, per sensor
-        let mut hygro_ok: [bool; SENSORS] = [false; SENSORS]; // plugged in, from the last reading
+        let mut detected: [bool; SENSORS] = [false; SENSORS]; // plugged in, from the last reading
+        let mut hygro_ok: [bool; SENSORS] = [false; SENSORS]; // detected AND calibrated (usable)
+        let mut raw_last: [u16; SENSORS] = [0; SENSORS]; // last raw ADC reading, for calibration
+        let mut cal_flash: Option<(usize, u32)> = None; // (line, tick) of the last capture, shows "SET!"
         let mut moisture_reads: u32 = 0; // completed readings, so watering can wait for a fresh one
         let mut seconds: u32 = 0; // uptime, counted by the 1000 ms task
         let mut next_moisture_s: u32 = 0; // read immediately at startup
@@ -740,7 +437,7 @@ fn main() -> ! {
         let mut flow_lpm: f32 = 0.0;
         let mut total_liters: f32 = 0.0;
         let mut showing_flow = false;
-        let mut sensor_on_at: Option<u32> = None; // tick when sensors were powered
+        let mut read_due = true; // take a moisture reading on the next 100 ms tick (first one at startup)
 
         // Clock: time of day = (seconds + clock_offset) % 86400, once set from the menu
         let mut clock_set = false;
@@ -748,7 +445,8 @@ fn main() -> ! {
         let mut last_water_day: Option<u32> = None; // day number of the last daily run
 
         // Watering state
-        let mut water = Water::Idle;
+        let mut water = Water::Standby;
+        let mut pid = Pid::new(); // PID state of the pod being watered
         let mut water_run_due = false;
         let mut next_water_s: u32 = 0; // fallback schedule while the clock isn't set
         let mut water_fault: Option<Fault> = None;
@@ -790,6 +488,21 @@ fn main() -> ! {
             // -----------------------
             // Button: click on release (< 1 s), long press fires at 1 s while held
             // -----------------------
+            // -----------------------
+            // Water level switch (debounced, so ripples in the tank don't toggle it)
+            // -----------------------
+            let low_now = level_is_low(level_sw.is_low());
+            if low_now != low_water {
+                level_ticks += 1;
+                if level_ticks * TICK_MS >= P_LEVEL_DEBOUNCE_MS {
+                    low_water = low_now;
+                    level_ticks = 0;
+                    redraw = true;
+                }
+            } else {
+                level_ticks = 0;
+            }
+
             let pressed = sw.is_low(); // active-low
             let mut click = false;
             let mut long_press = false;
@@ -837,15 +550,14 @@ fn main() -> ! {
                     Mode::Edit(_) => Mode::Browse,
 
                     Mode::Menu(MENU_RELEARN) => {
-                        // Read all hygrometers right now
-                        if sensor_on_at.is_none() {
-                            sensor_pwr.set_low();
-                            sensor_on_at = Some(n);
-                        }
-                        Mode::Relearn { reads: moisture_reads }
+                        // Read all sensors right now, and start averaging the joystick
+                        read_due = true;
+                        joy_sum = (0, 0);
+                        joy_samples = 0;
+                        Mode::Relearn { reads: moisture_reads, start_n: n }
                     }
                     Mode::Menu(MENU_SYSCHECK) => {
-                        if water == Water::Idle {
+                        if water == Water::Standby {
                             sys_result = [b'-'; PLANT_SLOTS];
                             sys_leak = false;
                             led_hmi.set_high();
@@ -859,6 +571,8 @@ fn main() -> ! {
                             Mode::Menu(MENU_SYSCHECK)
                         }
                     }
+                    // Live values: the sensors are read every 100 ms while this screen is open
+                    Mode::Menu(MENU_CALIBRATE) => Mode::Calibrate { sel: 0, top: 0, col: CalCol::Name },
                     Mode::Menu(MENU_CLOCK) => {
                         let (hh, mm) = if clock_set { hh_mm(tod) } else { (12, 0) };
                         Mode::SetTime { what: TimeSet::Clock, hh, mm, field: TimeField::Hour }
@@ -871,12 +585,30 @@ fn main() -> ! {
                     },
                     Mode::Menu(_) => Mode::Browse, // EXIT
 
-                    Mode::Relearn { reads } => Mode::Relearn { reads }, // still reading
+                    Mode::Relearn { reads, start_n } => Mode::Relearn { reads, start_n }, // still learning
                     Mode::RelearnResult => Mode::Menu(MENU_RELEARN),
                     Mode::SysCheck { step, start_n, start_pulses } => {
                         Mode::SysCheck { step, start_n, start_pulses } // hold to abort
                     }
                     Mode::SysResult => Mode::Menu(MENU_SYSCHECK),
+
+                    Mode::Calibrate { sel, top, col } => {
+                        // Store the current reading as LOW (dry) or HI (wet) for this sensor
+                        if let Some((_, _, s)) = cal_entry(sel) {
+                            if detected[s] && col != CalCol::Name {
+                                match col {
+                                    CalCol::Low => cal_dry[s] = raw_last[s],
+                                    CalCol::High => cal_wet[s] = raw_last[s],
+                                    CalCol::Name => {}
+                                }
+                                hygro_ok = usable_sensors(&detected, &cal_dry, &cal_wet);
+                                save_failed = !save_all(&mut store, &plants, water_time, &cal_dry, &cal_wet, joy_center);
+                                skip_overrun = true;
+                                cal_flash = Some((sel, n));
+                            }
+                        }
+                        Mode::Calibrate { sel, top, col }
+                    }
 
                     Mode::SetTime { what: TimeSet::Clock, hh, mm, .. } => {
                         // Clock now reads hh:mm:00
@@ -888,7 +620,7 @@ fn main() -> ! {
                     }
                     Mode::SetTime { what: TimeSet::Water, hh, mm, .. } => {
                         water_time = (hh, mm);
-                        save_failed = !save_all(&mut store, &plants, water_time);
+                        save_failed = !save_all(&mut store, &plants, water_time, &cal_dry, &cal_wet, joy_center);
                         skip_overrun = true;
                         Mode::Menu(MENU_WATER_TIME)
                     }
@@ -901,8 +633,39 @@ fn main() -> ! {
             // Joystick stuff here:
             // -----------------------
             // converting the analog inputs to digital values
-            let x: u16 = adc.convert(&x_pin, SampleTime::Cycles_480);
-            let y: u16 = adc.convert(&y_pin, SampleTime::Cycles_480);
+            let x_raw: u16 = adc.convert(&x_pin, SampleTime::Cycles_480);
+            let y_raw: u16 = adc.convert(&y_pin, SampleTime::Cycles_480);
+
+            // RELEARN: average the resting stick position, then finish once the
+            // sensor reading is also in
+            if let Mode::Relearn { reads, start_n } = mode {
+                if n.wrapping_sub(start_n) >= JOY_SETTLE_TICKS {
+                    joy_sum.0 += x_raw as u32;
+                    joy_sum.1 += y_raw as u32;
+                    joy_samples += 1;
+                }
+                if moisture_reads != reads && joy_samples >= JOY_MIN_SAMPLES {
+                    let center = (
+                        (joy_sum.0 / joy_samples) as u16,
+                        (joy_sum.1 / joy_samples) as u16,
+                    );
+                    // Reject a center that's way off (stick was being held)
+                    joy_learn_ok = joy_center_ok(center.0) && joy_center_ok(center.1);
+                    if joy_learn_ok {
+                        joy_center = center;
+                        save_failed = !save_all(&mut store, &plants, water_time, &cal_dry, &cal_wet, joy_center);
+                        skip_overrun = true;
+                    }
+                    mode = Mode::RelearnResult;
+                    redraw = true;
+                }
+            }
+
+            // Shift by the learned center before applying the direction thresholds
+            // FS for joystick here, to set to 2048 if OFF
+            let center = if FS_JOY_RESET { joy_center } else { (JOY_IDEAL_CENTER, JOY_IDEAL_CENTER) };
+            let x = joy_correct(x_raw, center.0);
+            let y = joy_correct(y_raw, center.1);
             let dir = read_dir(x, y);
 
             // One step each time the stick leaves the center. In the time editor,
@@ -941,15 +704,15 @@ fn main() -> ! {
                         let entry = &mut plants[row][plant];
                         match (dir, field) {
                             (Dir::Left | Dir::Right, _) => mode = Mode::Edit(field.other()),
-                            (Dir::Up, Field::Water) => entry.0 = entry.0.up(),
-                            (Dir::Down, Field::Water) => entry.0 = entry.0.down(),
+                            (Dir::Up, Field::Water) => entry.0 = water_up(entry.0),
+                            (Dir::Down, Field::Water) => entry.0 = water_down(entry.0),
                             (Dir::Up, Field::Light) => entry.1 = entry.1.up(),
                             (Dir::Down, Field::Light) => entry.1 = entry.1.down(),
                             (Dir::Center, _) => {}
                         }
                         // Save every change (pushing past HI/LOW changes nothing, so no save)
                         if plants[row][plant] != before {
-                            save_failed = !save_all(&mut store, &plants, water_time);
+                            save_failed = !save_all(&mut store, &plants, water_time, &cal_dry, &cal_wet, joy_center);
                             skip_overrun = true; // rare 1-2 s sector erase is expected, not a fault
                         }
                     }
@@ -963,6 +726,25 @@ fn main() -> ! {
                     }
                     Mode::RelearnResult if dir == Dir::Left => mode = Mode::Menu(MENU_RELEARN),
                     Mode::SysResult if dir == Dir::Left => mode = Mode::Menu(MENU_SYSCHECK),
+                    Mode::Calibrate { sel, top, col } => {
+                        let count = cal_count().max(1);
+                        mode = match (dir, col) {
+                            (Dir::Up, _) => {
+                                let sel = (sel + count - 1) % count;
+                                Mode::Calibrate { sel, top: cal_scroll(sel, top), col }
+                            }
+                            (Dir::Down, _) => {
+                                let sel = (sel + 1) % count;
+                                Mode::Calibrate { sel, top: cal_scroll(sel, top), col }
+                            }
+                            (Dir::Right, CalCol::Name) => Mode::Calibrate { sel, top, col: CalCol::Low },
+                            (Dir::Right, _) => Mode::Calibrate { sel, top, col: CalCol::High },
+                            (Dir::Left, CalCol::High) => Mode::Calibrate { sel, top, col: CalCol::Low },
+                            (Dir::Left, CalCol::Low) => Mode::Calibrate { sel, top, col: CalCol::Name },
+                            (Dir::Left, CalCol::Name) => Mode::Menu(MENU_CALIBRATE),
+                            (Dir::Center, _) => mode,
+                        };
+                    }
                     Mode::SetTime { what, hh, mm, field } => {
                         let (hh, mm, field) = match (dir, field) {
                             (Dir::Left | Dir::Right, TimeField::Hour) => (hh, mm, TimeField::Minute),
@@ -1044,9 +826,10 @@ fn main() -> ! {
             if n % 10 == 3
             {
 
-                // Sensor: Read once the warm-up has passed
-                if let Some(start) = sensor_on_at {
-                    if n.wrapping_sub(start) * TICK_MS >= P_SENSOR_WARMUP_MS {
+                // Sensor: read when due, or every 100 ms while calibrating
+                {
+                    if read_due || matches!(mode, Mode::Calibrate { .. }) {
+                        read_due = false;
                         let raw: [u16; SENSORS] = [
                             read_avg!(adc, m0_pin),
                             read_avg!(adc, m1_pin),
@@ -1055,19 +838,20 @@ fn main() -> ! {
                             read_avg!(adc, m4_pin),
                             read_avg!(adc, m5_pin),
                         ];
-                        sensor_pwr.set_high(); // off again
 
-                        // Which hygrometers are plugged in, and their moisture
+                        // Which sensors are plugged in, which are usable, and their moisture
+                        raw_last = raw;
                         for i in 0..SENSORS {
-                            hygro_ok[i] = hygro_detected(raw[i]);
+                            detected[i] = hygro_detected(raw[i]);
                         }
-                        // Only sensors with calibration in params.dcm
-                        for i in 0..CALIBRATED {
-                            moisture[i] = moisture_pct(raw[i], P_MOISTURE_DRY[i], P_MOISTURE_WET[i]);
+                        hygro_ok = usable_sensors(&detected, &cal_dry, &cal_wet);
+                        for i in 0..SENSORS {
+                            if let Some((dry, wet)) = cal_of(i, &cal_dry, &cal_wet) {
+                                moisture[i] = moisture_pct(raw[i], dry, wet);
+                            }
                         }
                         moisture_reads = moisture_reads.wrapping_add(1);
                         next_moisture_s = seconds + P_MOISTURE_PERIOD_S;
-                        sensor_on_at = None;
                         redraw = true;
 
                         // Pod unplugged while editing it: back to browsing
@@ -1076,12 +860,7 @@ fn main() -> ! {
                                 mode = Mode::Browse;
                             }
                         }
-                        // Relearn finished
-                        if let Mode::Relearn { reads } = mode {
-                            if moisture_reads != reads {
-                                mode = Mode::RelearnResult;
-                            }
-                        }
+                        // (RELEARN finishes in the 10 ms task, once the joystick samples are in too)
                     }
                 }
 
@@ -1109,7 +888,8 @@ fn main() -> ! {
                                     plant_pod_installed(r, p, &hygro_ok)
                                 })
                                 .count();
-                            let _ = lcd.write_line(0, format_args!("PODS FOUND: {}", found), &mut delay);
+                            let joy = if joy_learn_ok { "OK" } else { "ERR" };
+                            let _ = lcd.write_line(0, format_args!("PODS:{} JOY:{}", found, joy), &mut delay);
                         }
                         Mode::SysCheck { step, .. } => match step {
                             Sys::Led => {
@@ -1133,6 +913,11 @@ fn main() -> ! {
                                 let _ = lcd.write_line(0, format_args!("SYS CHECK OK"), &mut delay);
                             }
                         }
+                        Mode::Calibrate { top, .. } => {
+                            let just_set = cal_flash.map_or(false, |(i, t)| i == top && n.wrapping_sub(t) < 100);
+                            let line = cal_text(top, &detected, &raw_last, just_set);
+                            let _ = lcd.write_line(0, format_args!("{}", line.as_str()), &mut delay);
+                        }
                         Mode::SetTime { what: TimeSet::Clock, .. } => {
                             let _ = lcd.write_line(0, format_args!("SET CLOCK"), &mut delay);
                         }
@@ -1141,7 +926,7 @@ fn main() -> ! {
                         }
 
                         // Browse / Edit, priority: save error > watering fault > watering status
-                        //                          > flow > header + this plant's moisture
+                        //                          > low water warning > flow > header + this plant's moisture
                         Mode::Browse | Mode::Edit(_) => {
                             if save_failed {
                                 let _ = lcd.write_line(0, format_args!("SAVE FAILED"), &mut delay);
@@ -1152,25 +937,51 @@ fn main() -> ! {
                                 };
                                 let (r, p) = row_plant(idx);
                                 let _ = lcd.write_line(0, format_args!("{} R{} P{}", text, r + 1, p + 1), &mut delay);
-                            } else if let Water::Pumping { idx, stage, start_pulses, goal, .. } = water {
-                                let (r, p) = row_plant(idx);
-                                let to_ml = |pulses: u32| (pulses as f32 * 1000.0 / P_FLOW_PULSES_PER_L) as u32;
-                                let delivered = FLOW_PULSES.load(Ordering::Relaxed).wrapping_sub(start_pulses);
-                                let _ = lcd.write_line(
-                                    0,
-                                    format_args!("R{}P{} S{} {}/{}mL", r + 1, p + 1, stage + 1, to_ml(delivered), to_ml(goal)),
-                                    &mut delay,
-                                );
-                            } else if let Water::Soaking { idx, stage, until_s } = water {
-                                let (r, p) = row_plant(idx);
-                                let _ = lcd.write_line(
-                                    0,
-                                    format_args!("R{}P{} S{} SOAK {}s", r + 1, p + 1, stage + 1, until_s.saturating_sub(seconds)),
-                                    &mut delay,
-                                );
-                            } else if let Water::Check { idx, .. } | Water::Measuring { idx, .. } = water {
-                                let (r, p) = row_plant(idx);
-                                let _ = lcd.write_line(0, format_args!("R{}P{} CHECK", r + 1, p + 1), &mut delay);
+                            } else if water != Water::Standby {
+                                // Watering status, e.g. "R1P2 C1 45/150mL" or "R1P2 HOLD 42>50%"
+                                match water {
+                                    Water::Evaluate { idx, .. } => {
+                                        let (r, p) = row_plant(idx);
+                                        let _ = lcd.write_line(0, format_args!("R{}P{} CHECK", r + 1, p + 1), &mut delay);
+                                    }
+                                    Water::Active { idx, cycle, sub: ActiveSub::PreControl, .. } => {
+                                        let (r, p) = row_plant(idx);
+                                        let _ = lcd.write_line(0, format_args!("R{}P{} C{} PRESSURE", r + 1, p + 1, cycle + 1), &mut delay);
+                                    }
+                                    Water::Active { idx, cycle, sub: ActiveSub::FlowActive, start_pulses, goal, .. } => {
+                                        let (r, p) = row_plant(idx);
+                                        let delivered = FLOW_PULSES.load(Ordering::Relaxed).wrapping_sub(start_pulses);
+                                        let _ = lcd.write_line(
+                                            0,
+                                            format_args!(
+                                                "R{}P{} C{} {}/{}mL",
+                                                r + 1,
+                                                p + 1,
+                                                cycle + 1,
+                                                pulses_to_ml(delivered),
+                                                pulses_to_ml(goal)
+                                            ),
+                                            &mut delay,
+                                        );
+                                    }
+                                    Water::Slowdown { idx, cycle, .. } => {
+                                        let (r, p) = row_plant(idx);
+                                        let _ = lcd.write_line(0, format_args!("R{}P{} C{} SLOWDOWN", r + 1, p + 1, cycle + 1), &mut delay);
+                                    }
+                                    Water::Hold { idx, .. } => {
+                                        let (r, p) = row_plant(idx);
+                                        let now_pct = SENSOR_OF[r][p].map_or(0, |s| moisture[s]);
+                                        let _ = lcd.write_line(
+                                            0,
+                                            format_args!("R{}P{} HOLD {}>{}%", r + 1, p + 1, now_pct, plants[r][p].0),
+                                            &mut delay,
+                                        );
+                                    }
+                                    Water::Standby => {}
+                                }
+                            } else if low_water {
+                                // Warning only: shown when nothing more important is on screen
+                                let _ = lcd.write_line(0, format_args!("LOW WATER REFILL"), &mut delay);
                             } else if showing_flow {
                                 let _ = lcd.write_line(
                                     0,
@@ -1197,14 +1008,14 @@ fn main() -> ! {
             if n % 10 == 4 && drawing
             {
                 // Display line 2 + cursor
-                let mut cursor: Option<u8> = None; // blinking cursor column on line 2
+                let mut cursor: Option<(u8, u8)> = None; // blinking cursor (column, line)
                 match mode {
                     Mode::Menu(item) => {
                         let text = menu_msg.unwrap_or(MENU[item]);
                         let _ = lcd.write_line(1, format_args!("> {}", text), &mut delay);
                     }
                     Mode::Relearn { .. } => {
-                        let _ = lcd.write_line(1, format_args!("READING SENSORS"), &mut delay);
+                        let _ = lcd.write_line(1, format_args!("HANDS OFF STICK"), &mut delay);
                     }
                     Mode::RelearnResult => {
                         // 1 = pod installed, - = not, per plant, rows split by '|'
@@ -1224,40 +1035,77 @@ fn main() -> ! {
                         let map = core::str::from_utf8(&buf[..len]).unwrap_or("?");
                         let _ = lcd.write_line(1, format_args!("{}", map), &mut delay);
                     }
+                    Mode::Calibrate { sel, top, col } => {
+                        let just_set = cal_flash.map_or(false, |(i, t)| i == top + 1 && n.wrapping_sub(t) < 100);
+                        let line = cal_text(top + 1, &detected, &raw_last, just_set);
+                        let _ = lcd.write_line(1, format_args!("{}", line.as_str()), &mut delay);
+                        let x = match col {
+                            CalCol::Name => CAL_NAME_COL,
+                            CalCol::Low => CAL_LOW_COL,
+                            CalCol::High => CAL_HI_COL,
+                        };
+                        cursor = Some((x, (sel - top) as u8));
+                    }
                     Mode::SetTime { hh, mm, field, .. } => {
                         let _ = lcd.write_line(1, format_args!("     {:02}:{:02}", hh, mm), &mut delay);
-                        cursor = Some(match field {
-                            TimeField::Hour => HOUR_COL,
-                            TimeField::Minute => MIN_COL,
-                        });
+                        cursor = Some((
+                            match field {
+                                TimeField::Hour => HOUR_COL,
+                                TimeField::Minute => MIN_COL,
+                            },
+                            1,
+                        ));
                     }
                     Mode::Browse | Mode::Edit(_) => {
                         // Selected plant ("--" for a pod that isn't installed)
+                        // Wtr = target moisture %, Lt = hours per day, e.g. "R1 P1 50% 12H  *"
+                        // (a 0 % target shows as OFF: never watered automatically)
                         let (water_set, light_set) = plants[row][plant];
-                        let (wtr, lt) = if plant_pod_installed(row, plant, &hygro_ok) {
-                            (water_set.as_str(), light_set.as_str())
-                        } else {
-                            ("--", "--")
-                        };
                         let marker = if mode == Mode::Browse { ' ' } else { '*' };
-                        let _ = lcd.write_line(
-                            1,
-                            format_args!("R{} P{} {:<3} {:<3}  {}", row + 1, plant + 1, wtr, lt, marker),
-                            &mut delay,
-                        );
+                        if plant_pod_installed(row, plant, &hygro_ok) {
+                            if water_set == 0 {
+                                let _ = lcd.write_line(
+                                    1,
+                                    format_args!("R{} P{} OFF {:>2}H  {}", row + 1, plant + 1, light_hours(light_set), marker),
+                                    &mut delay,
+                                );
+                            } else {
+                                let _ = lcd.write_line(
+                                    1,
+                                    format_args!(
+                                        "R{} P{} {:>2}% {:>2}H  {}",
+                                        row + 1,
+                                        plant + 1,
+                                        water_set,
+                                        light_hours(light_set),
+                                        marker
+                                    ),
+                                    &mut delay,
+                                );
+                            }
+                        } else {
+                            let _ = lcd.write_line(
+                                1,
+                                format_args!("R{} P{} --  --   {}", row + 1, plant + 1, marker),
+                                &mut delay,
+                            );
+                        }
                         if let Mode::Edit(field) = mode {
-                            cursor = Some(match field {
-                                Field::Water => WATER_COL,
-                                Field::Light => LIGHT_COL,
-                            });
+                            cursor = Some((
+                                match field {
+                                    Field::Water => WATER_COL,
+                                    Field::Light => LIGHT_COL,
+                                },
+                                1,
+                            ));
                         }
                     }
                 }
 
                 // Blinking cursor on the field being edited
                 match cursor {
-                    Some(col) => {
-                        let _ = lcd.set_cursor(col, 1, &mut delay);
+                    Some((col, line)) => {
+                        let _ = lcd.set_cursor(col, line, &mut delay);
                         let _ = lcd.cursor_blink(true, &mut delay);
                     }
                     None => {
@@ -1274,99 +1122,159 @@ fn main() -> ! {
                 // -------------------------------------------------
                 let sys_busy = matches!(mode, Mode::SysCheck { .. });
                 water = match water {
-                    Water::Idle => {
+                    // ---------- STANDBY: wait for the next watering run ----------
+                    Water::Standby => {
                         if water_run_due && moisture_reads > 0 && !sys_busy {
                             water_run_due = false;
                             water_fault = None; // a new run clears the last run's fault
-                            water_from(0, &hygro_ok)
+                            next_pod(0, &hygro_ok, &mut pid)
                         } else {
-                            Water::Idle
+                            Water::Standby
                         }
                     }
 
-                    Water::Check { idx, stage } => {
+                    // ---------- EVALUATE: PID decides the next dose ----------
+                    Water::Evaluate { idx, cycle } => {
                         let (r, p) = row_plant(idx);
                         match sensor_valve(idx, &hygro_ok) {
-                            Some((s, v)) => {
-                                let current = moisture[s] as u32;
-                                let target = target_pct(plants[r][p].0) as u32;
-                                if current >= target {
-                                    water_from(idx + 1, &hygro_ok) // wet enough: next plant
-                                } else if stage >= P_WATER_STAGES.len() {
-                                    water_fault = Some(Fault::NotReached(idx)); // all stages used
-                                    water_from(idx + 1, &hygro_ok)
-                                } else {
-                                    // Stage level, e.g. 75% of a 50% target = 37%
-                                    let stage_level = target * P_WATER_STAGES[stage] as u32 / 100;
-                                    if current >= stage_level {
-                                        Water::Check { idx, stage: stage + 1 } // stage already met
-                                    } else {
-                                        // Volume for the gap, converted to flow meter pulses
-                                        let gap_pct = (stage_level - current) as f32;
-                                        let ml = gap_pct * P_ML_PER_PCT;
-                                        let goal = ((ml * P_FLOW_PULSES_PER_L / 1000.0) as u32).max(1);
-
-                                        valves[v].set_high(); // open the valve first,
-                                        pump.set_high(); // so the pump never pushes against closed valves
-                                        Water::Pumping {
-                                            idx,
-                                            stage,
-                                            start_s: seconds,
-                                            start_pulses: FLOW_PULSES.load(Ordering::Relaxed),
-                                            goal,
-                                        }
+                            Some((s, _)) => match decide(plants[r][p].0, moisture[s], cycle, &mut pid) {
+                                Decision::Dose(ml) => {
+                                    pump.set_high(); // PRE-CONTROL: pump on, valve still closed
+                                    Water::Active {
+                                        idx,
+                                        cycle,
+                                        sub: ActiveSub::PreControl,
+                                        start_n: n,
+                                        start_s: seconds,
+                                        start_pulses: 0,
+                                        goal: ml_to_pulses(ml),
                                     }
                                 }
-                            }
-                            None => water_from(idx + 1, &hygro_ok), // pod not installed: skip
+                                Decision::Done => next_pod(idx + 1, &hygro_ok, &mut pid),
+                                Decision::NotReached => {
+                                    water_fault = Some(Fault::NotReached(idx));
+                                    next_pod(idx + 1, &hygro_ok, &mut pid)
+                                }
+                            },
+                            None => next_pod(idx + 1, &hygro_ok, &mut pid), // pod not installed: skip
                         }
                     }
 
-                    Water::Pumping { idx, stage, start_s, start_pulses, goal } => {
+                    // ---------- ACTIVE / PRE-CONTROL: build pressure ----------
+                    Water::Active { idx, cycle, sub: ActiveSub::PreControl, start_n, goal, .. } => {
+                        let (r, p) = row_plant(idx);
+                        if !plant_pod_installed(r, p, &hygro_ok) {
+                            Water::Slowdown { idx, cycle, start_n: n, end: RunEnd::Removed }
+                        } else if n.wrapping_sub(start_n) * TICK_MS >= P_PRECONTROL_MS {
+                            if let Some(v) = valve_of(idx) {
+                                valves[v].set_high(); // FLOW ACTIVE: valve opens
+                            }
+                            Water::Active {
+                                idx,
+                                cycle,
+                                sub: ActiveSub::FlowActive,
+                                start_n: n,
+                                start_s: seconds,
+                                start_pulses: FLOW_PULSES.load(Ordering::Relaxed),
+                                goal,
+                            }
+                        } else {
+                            water
+                        }
+                    }
+
+                    // ---------- ACTIVE / FLOW ACTIVE: deliver the dose ----------
+                    Water::Active { idx, cycle, sub: ActiveSub::FlowActive, start_s, start_pulses, goal, .. } => {
                         let delivered = FLOW_PULSES.load(Ordering::Relaxed).wrapping_sub(start_pulses);
                         let run_s = seconds - start_s;
                         let no_flow = run_s >= P_FLOW_CHECK_S && flow_lpm < FLOW_SHOW_MIN_LPM;
                         let (r, p) = row_plant(idx);
                         let removed = !plant_pod_installed(r, p, &hygro_ok);
 
-                        if delivered >= goal || no_flow || removed || run_s >= P_PUMP_MAX_S {
-                            pump.set_low(); // pump off first, then close the valve
+                        let end = if no_flow {
+                            Some(RunEnd::NoFlow)
+                        } else if removed {
+                            Some(RunEnd::Removed)
+                        } else if delivered >= goal || run_s >= P_PUMP_MAX_S {
+                            Some(RunEnd::Done)
+                        } else {
+                            None
+                        };
+                        match end {
+                            Some(end) => {
+                                if let Some(v) = valve_of(idx) {
+                                    valves[v].set_low(); // SLOWDOWN: valve closes first...
+                                }
+                                Water::Slowdown { idx, cycle, start_n: n, end }
+                            }
+                            None => water,
+                        }
+                    }
+
+                    // ---------- SLOWDOWN: ...then the pump stops ----------
+                    Water::Slowdown { idx, cycle, start_n, end } => {
+                        if n.wrapping_sub(start_n) * TICK_MS >= P_SLOWDOWN_MS {
+                            pump.set_low();
                             if let Some(v) = valve_of(idx) {
-                                valves[v].set_low(); // always closes, even if the sensor vanished
+                                valves[v].set_low(); // make sure (e.g. ended during PRE-CONTROL)
                             }
-                            if no_flow {
-                                water_fault = Some(Fault::NoFlow(idx));
-                                water_from(idx + 1, &hygro_ok)
-                            } else if removed {
-                                water_from(idx + 1, &hygro_ok) // pod unplugged mid-watering
-                            } else {
-                                Water::Soaking { idx, stage, until_s: seconds + P_SOAK_S }
+                            match end {
+                                RunEnd::Done => {
+                                    read_due = true; // first HOLD reading right away
+                                    Water::Hold {
+                                        idx,
+                                        cycle: cycle + 1,
+                                        start_s: seconds,
+                                        reads: moisture_reads,
+                                        last: None,
+                                        steady: 0,
+                                        next_sample_s: seconds + P_HOLD_SAMPLE_S,
+                                    }
+                                }
+                                RunEnd::NoFlow => {
+                                    water_fault = Some(Fault::NoFlow(idx));
+                                    next_pod(idx + 1, &hygro_ok, &mut pid)
+                                }
+                                RunEnd::Removed => next_pod(idx + 1, &hygro_ok, &mut pid),
                             }
                         } else {
                             water
                         }
                     }
 
-                    Water::Soaking { idx, stage, until_s } => {
-                        if seconds >= until_s {
-                            next_moisture_s = seconds; // ask for a fresh reading now
-                            Water::Measuring { idx, stage, reads: moisture_reads }
-                        } else {
-                            water
-                        }
-                    }
+                    // ---------- HOLD: wait for moisture to settle ----------
+                    Water::Hold { idx, cycle, start_s, reads, last, steady, next_sample_s } => {
+                        let (r, p) = row_plant(idx);
+                        let sensor = SENSOR_OF[r][p];
+                        let (mut last, mut steady, mut next_sample_s) = (last, steady, next_sample_s);
 
-                    Water::Measuring { idx, stage, reads } => {
-                        if moisture_reads != reads {
-                            Water::Check { idx, stage: stage + 1 } // fresh reading: next stage
+                        // New reading in: count how many in a row barely changed
+                        let fresh = moisture_reads != reads;
+                        if fresh {
+                            if let Some(s) = sensor {
+                                let now = moisture[s];
+                                steady = match last {
+                                    Some(prev) if now.abs_diff(prev) <= P_HOLD_STEADY_PCT => steady + 1,
+                                    _ => 0,
+                                };
+                                last = Some(now);
+                            }
+                        }
+
+                        if steady >= P_HOLD_STEADY_COUNT || seconds - start_s >= P_HOLD_MAX_S || sensor.is_none() {
+                            Water::Evaluate { idx, cycle } // settled (or gave up waiting): next PID step
                         } else {
-                            water
+                            if seconds >= next_sample_s {
+                                read_due = true;
+                                next_sample_s = seconds + P_HOLD_SAMPLE_S;
+                            }
+                            Water::Hold { idx, cycle, start_s, reads: moisture_reads, last, steady, next_sample_s }
                         }
                     }
                 };
 
-                if let Water::Pumping { .. } = water {
-                    redraw = true; // live mL count while pumping
+                if let Water::Active { .. } = water {
+                    redraw = true; // live mL count while delivering
                 }
 
 
@@ -1387,7 +1295,7 @@ fn main() -> ! {
                 total_liters = total as f32 / P_FLOW_PULSES_PER_L;
 
                 let flowing = flow_lpm > FLOW_SHOW_MIN_LPM;
-                if flowing || flowing != showing_flow || water != Water::Idle {
+                if flowing || flowing != showing_flow || water != Water::Standby {
                     redraw = true;
                 }
                 showing_flow = flowing;
@@ -1412,38 +1320,57 @@ fn main() -> ! {
                     water_run_due = true;
                 }
 
-                // Sensor: Start a reading when due
-                if seconds >= next_moisture_s && sensor_on_at.is_none() {
-                    sensor_pwr.set_low(); // P-MOSFET on
-                    sensor_on_at = Some(n);
-                }
-
-                // -------------------------------------------------
-                // FAULT logic
-                // -------------------------------------------------
-                let fault = overruns > 0 || water_fault.is_some() || save_failed;
-
-                // For not creating simple 1s blinking inteval if theres an issue - can add different sequences later
-                // (sys check drives the LED itself)
-                if !matches!(mode, Mode::SysCheck { .. }) {
-                    if fault == true
-                    {
-
-                        if led_on == false
-                        {
-                            led_hmi.set_low();
-                            led_on = true;
+                // Grow lights: each installed pod is lit for its Lt hours per day.
+                // With the clock set the day starts at P_LIGHT_START_H; without it
+                // (e.g. after a power loss) the light period starts at power-up.
+                let (light_now, light_start) = if clock_set {
+                    (tod, P_LIGHT_START_H as u32 * 3600)
+                } else {
+                    (seconds % SECONDS_PER_DAY, 0)
+                };
+                for r in 0..ROWS {
+                    for p in 0..PLANTS_PER_ROW[r] {
+                        if let Some(l) = LIGHT_OF[r][p] {
+                            let len = light_hours(plants[r][p].1) * 3600;
+                            let on = plant_pod_installed(r, p, &hygro_ok)
+                                && in_daily_window(light_now, light_start, len);
+                            if on {
+                                lights[l].set_high();
+                            } else {
+                                lights[l].set_low();
+                            }
                         }
-                        else if led_on == true {
-                            led_hmi.set_high();
-                            led_on = false;
-                        }
-
-                    } else {
-                        led_hmi.set_low();
                     }
                 }
 
+                // Sensor: schedule the periodic reading
+                if seconds >= next_moisture_s {
+                    read_due = true;
+                }
+
+                // (Case LED fault patterns are driven every 10 ms below, so LOW WATER
+                // can flash faster than this 1 s task)
+            }
+
+            // -------------------------------------------------
+            // FAULT logic: case LED (sys check drives the LED itself)
+            //   LOW WATER    fast flash, 250 ms on / 250 ms off
+            //   other fault  slow blink, 1 s on / 1 s off
+            // -------------------------------------------------
+            if !matches!(mode, Mode::SysCheck { .. }) {
+                let fault = overruns > 0 || water_fault.is_some() || save_failed;
+                let led = if low_water {
+                    (n / 25) % 2 == 0
+                } else if fault {
+                    (n / 100) % 2 == 0
+                } else {
+                    false
+                };
+                if led {
+                    led_hmi.set_high();
+                } else {
+                    led_hmi.set_low();
+                }
             }
 
 
@@ -1462,9 +1389,5 @@ fn main() -> ! {
     }
 
     loop {}
-
-    // Other functions:
-    //- Show plant active sensor readings
-    //- Sensor calibration options
 
 }

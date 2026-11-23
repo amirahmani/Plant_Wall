@@ -1,0 +1,9 @@
+[package]
+name = "plant_logic"
+version = "0.1.0"
+edition = "2024"
+description = "Hardware-independent logic for the plant wall. Unit-tested on the PC."
+
+# No dependencies on purpose: nothing here may touch the STM32 or the HAL,
+# so this crate also builds (and its tests run) on a normal computer.
+[dependencies]

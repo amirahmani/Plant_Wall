@@ -1,0 +1,296 @@
+KONSERVIERUNG_FORMAT 2.0
+
+* ---------------------------------------------------------------
+* Joystick / UI
+* ---------------------------------------------------------------
+FESTWERT P_Joystick_LOW
+   LANGNAME "Joystick pushed-low threshold (12-bit ADC, rest ~2048)"
+   EINHEIT_W "counts"
+   WERT 800
+END
+
+FESTWERT P_Joystick_HIGH
+   LANGNAME "Joystick pushed-high threshold (12-bit ADC, rest ~2048)"
+   EINHEIT_W "counts"
+   WERT 3200
+END
+
+FESTWERT P_BUTTON_COOLDOWN
+   LANGNAME "Button debounce, in main-loop cycles (~10 ms each)"
+   EINHEIT_W "loops"
+   WERT 10
+END
+
+FESTWERT P_JOY_MAX_OFFSET
+   LANGNAME "Maximum allowed offset from the joystick center to be allowed"
+   EINHEIT_W "loops"
+   WERT 2000
+END
+
+FESTWERT P_FS_JOY_RESET
+   LANGNAME "Function switch: learn joystick center in RELEARN (0 = off, 1 = on)"
+   EINHEIT_W "-"
+   WERT 1
+END
+
+* ---------------------------------------------------------------
+* Hygrometers, one value per sensor (0, 1, 2). Which plant each sensor
+* is on is set by SENSOR_OF in main.rs.
+* Calibrate each: read it in dry soil and in freshly watered soil.
+* On HD-38 modules a HIGHER reading means DRIER.
+* ---------------------------------------------------------------
+FESTWERTEBLOCK P_MOISTURE_DRY 3
+   LANGNAME "ADC reading in dry soil, per sensor"
+   EINHEIT_W "counts"
+   WERT 3200 3200 3200
+END
+
+FESTWERTEBLOCK P_MOISTURE_WET 3
+   LANGNAME "ADC reading in freshly watered soil, per sensor"
+   EINHEIT_W "counts"
+   WERT 1400 1400 1400
+END
+
+FESTWERT P_MOISTURE_SAMPLES
+   LANGNAME "ADC samples averaged per sensor reading"
+   EINHEIT_W "-"
+   WERT 8
+END
+
+FESTWERT P_SENSOR_WARMUP_MS
+   LANGNAME "Wait after powering sensors before reading"
+   EINHEIT_W "ms"
+   WERT 100
+END
+
+FESTWERT P_MOISTURE_PERIOD_S
+   LANGNAME "Time between moisture readings (sensors unpowered in between)"
+   EINHEIT_W "s"
+   WERT 60
+END
+
+* ---------------------------------------------------------------
+* Flow meter
+* YF-S201 datasheet: ~450 pulses/L. Calibrate with a measuring jug:
+* pulses counted / liters collected.
+* ---------------------------------------------------------------
+FESTWERT P_FLOW_PULSES_PER_L
+   LANGNAME "Flow meter pulses per liter (K factor)"
+   EINHEIT_W "pulses/L"
+   WERT 450
+END
+
+* ---------------------------------------------------------------
+*
+* Control Loop
+* 
+* ---------------------------------------------------------------
+FESTWERT P_WATER_INTERVAL_S
+   LANGNAME "Time between watering runs"
+   EINHEIT_W "s"
+   WERT 86400
+END
+
+FESTWERTEBLOCK P_TARGET_MOISTURE 3
+   LANGNAME "Target moisture for Wtr LOW, MED, HI"
+   EINHEIT_W "%"
+   WERT 30 50 70
+END
+
+FESTWERTEBLOCK P_WATER_STAGES 4
+   LANGNAME "Watering stages, percent of target"
+   EINHEIT_W "%"
+   WERT 75 95 105 115
+END
+
+FESTWERT P_ML_PER_PCT
+   LANGNAME "Water needed to raise moisture by 1 percent"
+   EINHEIT_W "mL/%"
+   WERT 10
+END
+
+FESTWERT P_PUMP_MAX_S
+   LANGNAME "Max pump time per stage (safety timeout)"
+   EINHEIT_W "s"
+   WERT 60
+END
+
+FESTWERT P_SOAK_S
+   LANGNAME "Wait after each stage before re-measuring"
+   EINHEIT_W "s"
+   WERT 60
+END
+
+FESTWERT P_FLOW_CHECK_S
+   LANGNAME "Pump run time before a no-flow fault"
+   EINHEIT_W "s"
+   WERT 5
+END
+
+FESTWERT P_PID_KP
+   LANGNAME "PID proportional gain"
+   EINHEIT_W "mL/%"
+   WERT 10.0
+END
+
+FESTWERT P_PID_KI
+   LANGNAME "PID integral gain (per cycle)"
+   EINHEIT_W "mL/%"
+   WERT 2.0
+END
+
+FESTWERT P_PID_KD
+   LANGNAME "PID derivative gain (on measurement)"
+   EINHEIT_W "mL/%"
+   WERT 0.0
+END
+
+FESTWERT P_PID_I_MAX
+   LANGNAME "PID integral limit (anti-windup)"
+   EINHEIT_W "mL"
+   WERT 100.0
+END
+
+FESTWERT P_DOSE_MIN_ML
+   LANGNAME "Smallest dose per cycle"
+   EINHEIT_W "mL"
+   WERT 20.0
+END
+
+FESTWERT P_DOSE_MAX_ML
+   LANGNAME "Largest dose per cycle"
+   EINHEIT_W "mL"
+   WERT 300.0
+END
+
+FESTWERT P_DEADBAND_PCT
+   LANGNAME "Done when within this of target"
+   EINHEIT_W "%"
+   WERT 3
+END
+
+FESTWERT P_MAX_CYCLES
+   LANGNAME "Max doses per pod per run"
+   EINHEIT_W "-"
+   WERT 5
+END
+
+FESTWERT P_PRECONTROL_MS
+   LANGNAME "Pump run time before the valve opens"
+   EINHEIT_W "ms"
+   WERT 500
+END
+
+FESTWERT P_SLOWDOWN_MS
+   LANGNAME "Delay from valve close to pump stop"
+   EINHEIT_W "ms"
+   WERT 200
+END
+
+FESTWERT P_HOLD_SAMPLE_S
+   LANGNAME "Moisture reading interval during hold"
+   EINHEIT_W "s"
+   WERT 10
+END
+
+FESTWERT P_HOLD_STEADY_PCT
+   LANGNAME "Max change between readings to count as steady"
+   EINHEIT_W "%"
+   WERT 1
+END
+
+FESTWERT P_HOLD_STEADY_COUNT
+   LANGNAME "Steady readings in a row to end hold"
+   EINHEIT_W "-"
+   WERT 3
+END
+
+FESTWERT P_HOLD_MAX_S
+   LANGNAME "Longest hold before evaluating anyway"
+   EINHEIT_W "s"
+   WERT 300
+END
+
+* ---------------------------------------------------------------
+* 
+* Plant Detection Logic
+* 
+* ---------------------------------------------------------------
+
+FESTWERT P_HYGRO_MIN_RAW
+   LANGNAME "Below this raw reading the hygrometer counts as unplugged"
+   EINHEIT_W "counts"
+   WERT 200
+END
+
+FESTWERT P_HYGRO_MAX_RAW
+   LANGNAME "Above this raw reading the probe counts as disconnected"
+   EINHEIT_W "counts"
+   WERT 4000
+END
+
+* ---------------------------------------------------------------
+* 
+* 2nd Menu 
+* 
+* ---------------------------------------------------------------
+
+FESTWERT P_LONG_PRESS_MS
+   LANGNAME "Button hold time to open the menu"
+   EINHEIT_W "ms"
+   WERT 1000
+END
+
+FESTWERT P_SYSCHK_LED_MS
+   LANGNAME "Sys check: LED on time"
+   EINHEIT_W "ms"
+   WERT 1000
+END
+
+FESTWERT P_SYSCHK_STEP_MS
+   LANGNAME "Sys check: pump-only and per-valve time"
+   EINHEIT_W "ms"
+   WERT 500
+END
+
+FESTWERT P_SYSCHK_MIN_LPM
+   LANGNAME "Sys check: minimum believable flow (and leak threshold)"
+   EINHEIT_W "L/min"
+   WERT 0.5
+END
+
+FESTWERT P_SYSCHK_MAX_LPM
+   LANGNAME "Sys check: maximum believable flow"
+   EINHEIT_W "L/min"
+   WERT 30.0
+END
+
+* ---------------------------------------------------------------
+* 
+* Lighting
+* 
+* ---------------------------------------------------------------
+
+FESTWERTEBLOCK P_LIGHT_HOURS 3
+   LANGNAME "Grow light hours per day for Lt LOW, MED, HI"
+   EINHEIT_W "h"
+   WERT 8 12 16
+END
+
+FESTWERT P_LIGHT_START_H
+   LANGNAME "Hour the grow lights turn on each day"
+   EINHEIT_W "h"
+   WERT 6
+END
+
+* ---------------------------------------------------------------
+* 
+* Water Reservoir
+* 
+* ---------------------------------------------------------------
+
+FESTWERT P_LEVEL_DEBOUNCE_MS
+   LANGNAME "Level switch must hold a new state this long"
+   EINHEIT_W "ms"
+   WERT 2000
+END

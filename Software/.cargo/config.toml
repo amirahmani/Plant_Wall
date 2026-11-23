@@ -15,3 +15,8 @@ target = "thumbv7em-none-eabihf"   # Cortex-M4F with FPU (F446RE)
 
 [env]
 DEFMT_LOG = "info"
+
+# Unit tests for the hardware-independent logic run on this PC, not the STM32:
+#   cargo test-logic
+[alias]
+test-logic = "test -p plant_logic --target x86_64-unknown-linux-gnu"
