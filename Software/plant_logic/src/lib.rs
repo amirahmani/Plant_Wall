@@ -39,11 +39,11 @@ pub use sensors::*;
 
 use params::*;
 
-// Catch params.dcm mistakes at compile time. The array length can be smaller than
-// the physical sensor count when some probes are not fitted yet; we still keep
-// the ADC channels wired in place and only use the valid calibration range.
+// Catch params.dcm mistakes at compile time. Every sensor needs a default
+// calibration, even if its probe isn't fitted yet: a sensor without one only
+// becomes usable after both LOW and HI are set in the CALIBRATE menu.
 const _: () = assert!(P_MOISTURE_DRY.len() == P_MOISTURE_WET.len(), "MOISTURE_DRY and MOISTURE_WET must have the same length");
-const _: () = assert!(P_MOISTURE_DRY.len() <= SENSORS, "MOISTURE calibration arrays cannot exceed the sensor count");
+const _: () = assert!(P_MOISTURE_DRY.len() == SENSORS, "params.dcm: P_MOISTURE_DRY/WET need one value per sensor (SENSORS in layout.rs)");
 const _: () = assert!(P_MOISTURE_DRY.len() > 0, "MOISTURE calibration arrays must not be empty");
 const _: () = assert!(P_MOISTURE_SAMPLES > 0, "MOISTURE_SAMPLES must be at least 1");
 const _: () = assert!(P_TARGET_MOISTURE.len() == 3, "TARGET_MOISTURE needs LOW, MED, HI");

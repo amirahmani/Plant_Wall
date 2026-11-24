@@ -151,6 +151,16 @@ mod tests {
     }
 
     #[test]
+    fn every_sensor_has_a_default_calibration() {
+        // Without one, a pod only works after LOW *and* HI are both set in the
+        // menu (row 2 used to be like this: params.dcm had only 3 values).
+        let unset = [CAL_UNSET; SENSORS];
+        for i in 0..SENSORS {
+            assert!(cal_of(i, &unset, &unset).is_some(), "sensor {i} has no params.dcm calibration");
+        }
+    }
+
+    #[test]
     fn undetected_sensor_is_never_usable() {
         let mut dry = [CAL_UNSET; SENSORS];
         let mut wet = [CAL_UNSET; SENSORS];

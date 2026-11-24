@@ -34,21 +34,21 @@ FESTWERT P_FS_JOY_RESET
 END
 
 * ---------------------------------------------------------------
-* Hygrometers, one value per sensor (0, 1, 2). Which plant each sensor
+* Hygrometers, one value per sensor (0..5, must be SENSORS values). Which plant each sensor
 * is on is set by SENSOR_OF in main.rs.
 * Calibrate each: read it in dry soil and in freshly watered soil.
 * On HD-38 modules a HIGHER reading means DRIER.
 * ---------------------------------------------------------------
-FESTWERTEBLOCK P_MOISTURE_DRY 3
+FESTWERTEBLOCK P_MOISTURE_DRY 6
    LANGNAME "ADC reading in dry soil, per sensor"
    EINHEIT_W "counts"
-   WERT 3200 3200 3200
+   WERT 3200 3200 3200 3200 3200 3200
 END
 
-FESTWERTEBLOCK P_MOISTURE_WET 3
+FESTWERTEBLOCK P_MOISTURE_WET 6
    LANGNAME "ADC reading in freshly watered soil, per sensor"
    EINHEIT_W "counts"
-   WERT 1400 1400 1400
+   WERT 1400 1400 1400 1400 1400 1400
 END
 
 FESTWERT P_MOISTURE_SAMPLES
