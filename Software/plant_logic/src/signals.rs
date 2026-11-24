@@ -36,7 +36,7 @@ signal_group! {
     /// Control loop, outputs and sensors, every 100 ms (after the watering step).
     ///
     /// `mode`:        0 browse, 1 edit, 2 menu, 3 relearn, 4 relearn result,
-    ///                5 sys check, 6 sys result, 7 calibrate, 8 set time
+    ///                5 sys check, 6 sys result, 7 calibrate, 8 set time, 9 profile
     /// `water_state`: 0 standby, 1 evaluate, 2 pre-control, 3 flow active, 4 slowdown, 5 hold
     /// `fault`:       0 none, 1 no flow, 2 not reached
     pub struct ControlTrace, tag = b'C', period_ms = 100 {

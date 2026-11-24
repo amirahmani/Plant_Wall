@@ -79,7 +79,12 @@ Controls:
   Click (short press)  Browse: edit plant (installed pods only) / Edit: done / Menus: select
   Hold 1 s             Browse/Edit: open MENU / any menu screen: back to browse
                        during SYS CHECK: abort (pump off, all valves closed)
+  Main screen:  "POD  NOW/SET  LT"   NOW = soil moisture from the last reading
+                "R1P2  42/50% 12H"   SET = target, LT = light hours per day
   MENU (up/down to pick, click to select, left to go back):
+    PROFILE     presets per plant type (herbs, greens, fern, ...) for the plant
+                selected on the main screen: up/down picks one, click sets its
+                water target + light and saves (list in plant_logic/src/plant.rs)
     RELEARN     re-read all sensors now and show which pods are found; with
                 P_FS_JOY_RESET = 1 it also learns the joystick center (keep hands
                 off the stick) and saves it
@@ -136,10 +141,8 @@ use crate::settings::Store;
 // LCD constants
 const LCD_ADDR: u8 = 0x27;
 
-// LCD columns where the Wtr and Lt values start on line 2 ("R1 P1 50% 12H")
-// PARAMETER!! (move when .dcm integrated)
-const WATER_COL: u8 = 6;
-const LIGHT_COL: u8 = 10;
+// (LCD columns of the Wtr and Lt values on the main screen: WATER_COL /
+// LIGHT_COL in plant_logic/src/display.rs, next to the text they belong to)
 
 // LCD columns of the hour and minute in the time editor ("     07:30")
 const HOUR_COL: u8 = 5;
@@ -229,13 +232,14 @@ impl Field {
 // Menu / screens
 // ---------------------------------------------------------------
 
-const MENU: [&str; 6] = ["RELEARN", "SYS CHECK", "CALIBRATE", "CLOCK", "WATER TIME", "EXIT"];
-const MENU_RELEARN: usize = 0;
-const MENU_SYSCHECK: usize = 1;
-const MENU_CALIBRATE: usize = 2;
-const MENU_CLOCK: usize = 3;
-const MENU_WATER_TIME: usize = 4;
-// MENU[5] = EXIT: any other item goes back to browsing
+const MENU: [&str; 7] = ["PROFILE", "RELEARN", "SYS CHECK", "CALIBRATE", "CLOCK", "WATER TIME", "EXIT"];
+const MENU_PROFILE: usize = 0;
+const MENU_RELEARN: usize = 1;
+const MENU_SYSCHECK: usize = 2;
+const MENU_CALIBRATE: usize = 3;
+const MENU_CLOCK: usize = 4;
+const MENU_WATER_TIME: usize = 5;
+// MENU[6] = EXIT: any other item goes back to browsing
 
 // LCD columns on the CALIBRATE screen ("R1P1 1.1V LOW HI")
 const CAL_NAME_COL: u8 = 0;
@@ -283,6 +287,7 @@ enum Mode {
     SysResult,
     Calibrate { sel: usize, top: usize, col: CalCol }, // sel = selected line, top = first visible line
     SetTime { what: TimeSet, hh: u8, mm: u8, field: TimeField },
+    Profile { sel: usize }, // picking a PROFILES entry for the plant selected on the main screen
 }
 
 impl Mode {
@@ -298,6 +303,7 @@ impl Mode {
             Mode::SysResult => 6,
             Mode::Calibrate { .. } => 7,
             Mode::SetTime { .. } => 8,
+            Mode::Profile { .. } => 9,
         }
     }
 }
@@ -594,6 +600,26 @@ fn main() -> ! {
                     Mode::Browse => Mode::Browse,
                     Mode::Edit(_) => Mode::Browse,
 
+                    // Profiles apply to the plant selected on the main screen
+                    Mode::Menu(MENU_PROFILE) => {
+                        if plant_pod_installed(row, plant, &hygro_ok) {
+                            let (water_set, light_set) = plants[row][plant];
+                            Mode::Profile { sel: profile_of(water_set, light_set).unwrap_or(0) }
+                        } else {
+                            menu_msg = Some("NO POD SELECTED");
+                            Mode::Menu(MENU_PROFILE)
+                        }
+                    }
+                    Mode::Profile { sel } => {
+                        let p = PROFILES[sel];
+                        if plants[row][plant] != (p.water, p.light) {
+                            plants[row][plant] = (p.water, p.light);
+                            save_failed = !save_all(&mut store, &plants, water_time, &cal_dry, &cal_wet, joy_center);
+                            skip_overrun = true;
+                        }
+                        Mode::Browse // shows the new settings
+                    }
+
                     Mode::Menu(MENU_RELEARN) => {
                         // Read all sensors right now, and start averaging the joystick
                         read_due = true;
@@ -766,6 +792,14 @@ fn main() -> ! {
                             Dir::Up => Mode::Menu((item + MENU.len() - 1) % MENU.len()),
                             Dir::Down => Mode::Menu((item + 1) % MENU.len()),
                             Dir::Left => Mode::Browse,
+                            _ => mode,
+                        };
+                    }
+                    Mode::Profile { sel } => {
+                        mode = match dir {
+                            Dir::Up => Mode::Profile { sel: (sel + PROFILES.len() - 1) % PROFILES.len() },
+                            Dir::Down => Mode::Profile { sel: (sel + 1) % PROFILES.len() },
+                            Dir::Left => Mode::Menu(MENU_PROFILE),
                             _ => mode,
                         };
                     }
@@ -963,6 +997,9 @@ fn main() -> ! {
                             let line = cal_text(top, &detected, &raw_last, just_set);
                             let _ = lcd.write_line(0, format_args!("{}", line.as_str()), &mut delay);
                         }
+                        Mode::Profile { .. } => {
+                            let _ = lcd.write_line(0, format_args!("{}", profile_title(row, plant).as_str()), &mut delay);
+                        }
                         Mode::SetTime { what: TimeSet::Clock, .. } => {
                             let _ = lcd.write_line(0, format_args!("SET CLOCK"), &mut delay);
                         }
@@ -1033,17 +1070,10 @@ fn main() -> ! {
                                     format_args!("{:>5.2}L/m {:>5.1}L", flow_lpm, total_liters),
                                     &mut delay,
                                 );
-                            } else if let (true, Some(s)) =
-                                (plant_pod_installed(row, plant, &hygro_ok), SENSOR_OF[row][plant])
-                            {
-                                let _ = lcd.write_line(
-                                    0,
-                                    format_args!("R#|P#|Wtr|Lt{:>3}%", moisture[s]),
-                                    &mut delay,
-                                );
                             } else {
-                                // Pod not installed
-                                let _ = lcd.write_line(0, format_args!("R#|P#|Wtr|Lt  --"), &mut delay);
+                                // Column header for line 2 (the moisture itself is on line 2)
+                                let header = if mode == Mode::Browse { BROWSE_HEADER } else { EDIT_HEADER };
+                                let _ = lcd.write_line(0, format_args!("{}", header), &mut delay);
                             }
                         }
                     }
@@ -1091,6 +1121,9 @@ fn main() -> ! {
                         };
                         cursor = Some((x, (sel - top) as u8));
                     }
+                    Mode::Profile { sel } => {
+                        let _ = lcd.write_line(1, format_args!("{}", profile_text(&PROFILES[sel]).as_str()), &mut delay);
+                    }
                     Mode::SetTime { hh, mm, field, .. } => {
                         let _ = lcd.write_line(1, format_args!("     {:02}:{:02}", hh, mm), &mut delay);
                         cursor = Some((
@@ -1102,39 +1135,15 @@ fn main() -> ! {
                         ));
                     }
                     Mode::Browse | Mode::Edit(_) => {
-                        // Selected plant ("--" for a pod that isn't installed)
-                        // Wtr = target moisture %, Lt = hours per day, e.g. "R1 P1 50% 12H  *"
-                        // (a 0 % target shows as OFF: never watered automatically)
+                        // Selected plant: moisture now / target, light hours, e.g. "R1P2  42/50% 12H"
+                        // ("--" for a pod that isn't installed, OFF = never watered automatically)
                         let (water_set, light_set) = plants[row][plant];
-                        let marker = if mode == Mode::Browse { ' ' } else { '*' };
-                        if plant_pod_installed(row, plant, &hygro_ok) {
-                            if water_set == 0 {
-                                let _ = lcd.write_line(
-                                    1,
-                                    format_args!("R{} P{} OFF {:>2}H  {}", row + 1, plant + 1, light_hours(light_set), marker),
-                                    &mut delay,
-                                );
-                            } else {
-                                let _ = lcd.write_line(
-                                    1,
-                                    format_args!(
-                                        "R{} P{} {:>2}% {:>2}H  {}",
-                                        row + 1,
-                                        plant + 1,
-                                        water_set,
-                                        light_hours(light_set),
-                                        marker
-                                    ),
-                                    &mut delay,
-                                );
-                            }
-                        } else {
-                            let _ = lcd.write_line(
-                                1,
-                                format_args!("R{} P{} --  --   {}", row + 1, plant + 1, marker),
-                                &mut delay,
-                            );
-                        }
+                        let now_pct = match SENSOR_OF[row][plant] {
+                            Some(s) if plant_pod_installed(row, plant, &hygro_ok) => Some(moisture[s]),
+                            _ => None,
+                        };
+                        let line = browse_text(row, plant, now_pct, water_set, light_set);
+                        let _ = lcd.write_line(1, format_args!("{}", line.as_str()), &mut delay);
                         if let Mode::Edit(field) = mode {
                             cursor = Some((
                                 match field {
