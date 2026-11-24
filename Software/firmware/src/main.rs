@@ -88,7 +88,8 @@ Controls:
     RELEARN     re-read all sensors now and show which pods are found; with
                 P_FS_JOY_RESET = 1 it also learns the joystick center (keep hands
                 off the stick) and saves it
-    SYS CHECK   LED 1 s, pump alone 0.5 s (leak check), then each valve 0.5 s with flow check
+    SYS CHECK   1 s per step: LED, pump alone (leak check), each valve with flow
+                check, then each grow light on its own (watch that it lights up)
     CALIBRATE   live sensor voltages for all pods; up/down picks a pod, right moves to
                 LOW (dry) / HI (wet), click stores the current reading (saved to flash)
     CLOCK       set the time of day (lost on power loss; until set, watering
@@ -274,6 +275,7 @@ enum Sys {
     Led,          // HMI LED on
     PumpOnly,     // pump on, all valves closed: flow here means a leak
     Valve(usize), // pump on, this plant's valve open: flow must look real
+    Light(usize), // pump off, only this plant's grow light on (checked by eye)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -584,6 +586,9 @@ fn main() -> ! {
                         for v in valves.iter_mut() {
                             v.set_low();
                         }
+                        for l in lights.iter_mut() {
+                            l.set_low(); // the 1 s task puts them back on schedule
+                        }
                         led_hmi.set_low();
                         Mode::Browse
                     }
@@ -857,7 +862,10 @@ fn main() -> ! {
                 // After the last valve: pump off first, then close.
                 let next_step = |next_idx: Option<usize>| match next_idx {
                     Some(i) => Mode::SysCheck { step: Sys::Valve(i), start_n: n, start_pulses: now_pulses },
-                    None => Mode::SysResult,
+                    None => match next_wired_light(0) {
+                        Some(i) => Mode::SysCheck { step: Sys::Light(i), start_n: n, start_pulses: now_pulses },
+                        None => Mode::SysResult,
+                    },
                 };
 
                 match step {
@@ -890,7 +898,27 @@ fn main() -> ! {
                         mode = next_step(next_idx);
                         redraw = true;
                     }
+                    Sys::Light(idx) if elapsed_ms >= P_SYSCHK_STEP_MS => {
+                        mode = match next_wired_light(idx + 1) {
+                            Some(i) => Mode::SysCheck { step: Sys::Light(i), start_n: n, start_pulses: now_pulses },
+                            None => Mode::SysResult, // the 1 s task puts the lights back on schedule
+                        };
+                        redraw = true;
+                    }
                     _ => {}
+                }
+
+                // Grow lights during the check: all off, except the one being tested
+                let testing = match mode {
+                    Mode::SysCheck { step: Sys::Light(i), .. } => wired_light(i),
+                    _ => None,
+                };
+                for (l, pin) in lights.iter_mut().enumerate() {
+                    if testing == Some(l) {
+                        pin.set_high();
+                    } else {
+                        pin.set_low();
+                    }
                 }
             }
 
@@ -980,6 +1008,10 @@ fn main() -> ! {
                             Sys::Valve(idx) => {
                                 let (r, p) = row_plant(idx);
                                 let _ = lcd.write_line(0, format_args!("SYS CHK: R{} P{}", r + 1, p + 1), &mut delay);
+                            }
+                            Sys::Light(idx) => {
+                                let (r, p) = row_plant(idx);
+                                let _ = lcd.write_line(0, format_args!("SYS LIGHT: R{} P{}", r + 1, p + 1), &mut delay);
                             }
                         },
                         Mode::SysResult => {
@@ -1383,7 +1415,11 @@ fn main() -> ! {
                 } else {
                     (seconds % SECONDS_PER_DAY, 0)
                 };
+                // (SYS CHECK switches the lights itself while it runs)
                 for r in 0..ROWS {
+                    if matches!(mode, Mode::SysCheck { .. }) {
+                        break;
+                    }
                     for p in 0..PLANTS_PER_ROW[r] {
                         if let Some(l) = LIGHT_OF[r][p] {
                             let len = light_hours(plants[r][p].1) * 3600;

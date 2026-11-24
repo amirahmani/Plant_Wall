@@ -248,9 +248,9 @@ FESTWERT P_SYSCHK_LED_MS
 END
 
 FESTWERT P_SYSCHK_STEP_MS
-   LANGNAME "Sys check: pump-only and per-valve time"
+   LANGNAME "Sys check: pump-only, per-valve and per-light time"
    EINHEIT_W "ms"
-   WERT 500
+   WERT 1000
 END
 
 FESTWERT P_SYSCHK_MIN_LPM

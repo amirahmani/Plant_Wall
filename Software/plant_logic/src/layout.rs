@@ -122,6 +122,20 @@ pub fn next_wired_valve(from: usize) -> Option<usize> {
     (from..PLANT_SLOTS).find(|&i| wired_valve(i).is_some())
 }
 
+/// Grow light of a plant that exists in the layout (sys check switches each one on).
+pub fn wired_light(idx: usize) -> Option<usize> {
+    let (r, p) = row_plant(idx);
+    if r >= ROWS || p >= PLANTS_PER_ROW[r] {
+        return None;
+    }
+    LIGHT_OF[r][p]
+}
+
+/// Next plant at or after `from` with a wired grow light.
+pub fn next_wired_light(from: usize) -> Option<usize> {
+    (from..PLANT_SLOTS).find(|&i| wired_light(i).is_some())
+}
+
 /// i-th line on the CALIBRATE screen: (row, plant, sensor), in wall order.
 pub fn cal_entry(i: usize) -> Option<(usize, usize, usize)> {
     (0..PLANT_SLOTS)
@@ -181,6 +195,27 @@ mod tests {
             .sum();
         assert_eq!(cal_count(), wired);
         assert_eq!(cal_entry(cal_count()), None);
+    }
+
+    #[test]
+    fn sys_check_visits_every_light_once() {
+        let mut seen = [false; LIGHTS];
+        let mut next = next_wired_light(0);
+        while let Some(i) = next {
+            let l = wired_light(i).unwrap();
+            assert!(!seen[l], "light {l} tested twice");
+            seen[l] = true;
+            next = next_wired_light(i + 1);
+        }
+        assert_eq!(next_wired_light(PLANT_SLOTS), None);
+        // every light that belongs to a plant in the layout got its turn
+        for r in 0..ROWS {
+            for p in 0..PLANTS_PER_ROW[r] {
+                if let Some(l) = LIGHT_OF[r][p] {
+                    assert!(seen[l]);
+                }
+            }
+        }
     }
 
     #[test]
