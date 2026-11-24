@@ -105,6 +105,8 @@ memory.x must have FLASH LENGTH = 384K so code stays out of the settings sector.
 mod lcd;
 //Allow plant settings to be saved
 mod settings;
+// Signal trace out of the ST-LINK USB serial port
+mod trace_out;
 
 
 // Halt on panic
@@ -128,6 +130,7 @@ use crate::lcd::Lcd;
 // lives in the plant_logic crate, where it is unit-tested on the PC.
 use plant_logic::params::*;
 use plant_logic::*;
+use plant_logic::trace::{idx_code, Line, HEADER_EVERY_MS, LINE_MAX};
 use crate::settings::Store;
 
 // LCD constants
@@ -281,6 +284,33 @@ enum Mode {
     Calibrate { sel: usize, top: usize, col: CalCol }, // sel = selected line, top = first visible line
     SetTime { what: TimeSet, hh: u8, mm: u8, field: TimeField },
 }
+
+impl Mode {
+    /// Code for the signal trace (table in plant_logic/src/signals.rs)
+    fn trace_code(&self) -> u8 {
+        match self {
+            Mode::Browse => 0,
+            Mode::Edit(_) => 1,
+            Mode::Menu(_) => 2,
+            Mode::Relearn { .. } => 3,
+            Mode::RelearnResult => 4,
+            Mode::SysCheck { .. } => 5,
+            Mode::SysResult => 6,
+            Mode::Calibrate { .. } => 7,
+            Mode::SetTime { .. } => 8,
+        }
+    }
+}
+
+/// Queue a trace line for the serial port (dropped and counted if the queue is full)
+fn send_trace(line: &Line<LINE_MAX>) {
+    // Never send a cut-off line: it would shift every column after it.
+    // (Can't happen: unit tests check every line fits in LINE_MAX.)
+    if line.ok() {
+        trace_out::send(line.as_bytes());
+    }
+}
+
 /// Save plant settings, water time, menu calibration and joystick center together
 /// (one flash record). The byte layout is in plant_logic::packing.
 fn save_all(
@@ -315,6 +345,14 @@ fn main() -> ! {
         let gpioa = dp.GPIOA.split(&mut rcc);
         let gpiob = dp.GPIOB.split(&mut rcc);
         let gpioc = dp.GPIOC.split(&mut rcc);
+
+        // Signal trace: PA2 = USART2 TX, wired to the ST-LINK's USB serial port.
+        // Record it on the PC with tools/trace_record.py (see trace_out.rs).
+        let trace_tx = dp
+            .USART2
+            .tx(gpioa.pa2, hal::serial::Config::default().baudrate(trace_out::BAUD.bps()), &mut rcc)
+            .unwrap();
+        trace_out::init(trace_tx);
 
         // Joystick inputs
         let x_pin = gpioa.pa0.into_analog();
@@ -447,6 +485,7 @@ fn main() -> ! {
         // Watering state
         let mut water = Water::Standby;
         let mut pid = Pid::new(); // PID state of the pod being watered
+        let mut last_dose_ml: f32 = 0.0; // last PID output, for the trace
         let mut water_run_due = false;
         let mut next_water_s: u32 = 0; // fallback schedule while the clock isn't set
         let mut water_fault: Option<Fault> = None;
@@ -469,6 +508,11 @@ fn main() -> ! {
         let mut overruns: u32 = 0;
         let mut skip_overrun = false; // a flash save ran this tick (can take a sector erase)
 
+        // Signal trace (list of signals: plant_logic/src/signals.rs)
+        let mut uptime_ms: u64 = 0; // trace time stamp, never wraps
+        let mut next_header_ms: u64 = 0; // headers at power-on, then every HEADER_EVERY_MS
+        let mut trace_line: Line<LINE_MAX> = Line::new();
+
         // -----------------------------------------------------------------------------------------------------
         // -----------------------------------------------------------------------------------------------------
 
@@ -478,6 +522,7 @@ fn main() -> ! {
             while (DWT::cycle_count().wrapping_sub(next) as i32) < 0 {}
             next = next.wrapping_add(tick);
             n = n.wrapping_add(1);
+            uptime_ms += TICK_MS as u64;
 
             let tod = (seconds % SECONDS_PER_DAY + clock_offset) % SECONDS_PER_DAY; // time of day, s
 
@@ -1139,6 +1184,7 @@ fn main() -> ! {
                         match sensor_valve(idx, &hygro_ok) {
                             Some((s, _)) => match decide(plants[r][p].0, moisture[s], cycle, &mut pid) {
                                 Decision::Dose(ml) => {
+                                    last_dose_ml = ml;
                                     pump.set_high(); // PRE-CONTROL: pump on, valve still closed
                                     Water::Active {
                                         idx,
@@ -1373,6 +1419,94 @@ fn main() -> ! {
                 }
             }
 
+
+            // -------------------------------------------------
+            // Signal trace, at the end of the tick so it shows this tick's results.
+            // The signals are declared in plant_logic/src/signals.rs; the compiler
+            // makes sure every one is filled in here.
+            // -------------------------------------------------
+            if uptime_ms >= next_header_ms {
+                next_header_ms = uptime_ms + HEADER_EVERY_MS;
+                FastTrace::header(&mut trace_line);
+                send_trace(&trace_line);
+                ControlTrace::header(&mut trace_line);
+                send_trace(&trace_line);
+                SlowTrace::header(&mut trace_line);
+                send_trace(&trace_line);
+            }
+
+            // 10 ms: inputs
+            FastTrace {
+                joy_x: x_raw,
+                joy_y: y_raw,
+                joy_dir: dir.code(),
+                button: pressed,
+                low_water_raw: low_now,
+                flow_pulses: FLOW_PULSES.load(Ordering::Relaxed),
+            }
+            .frame(uptime_ms, &mut trace_line);
+            send_trace(&trace_line);
+
+            // 100 ms: control loop, outputs, sensors (same tick as the watering step)
+            if n % 10 == 5 {
+                let (goal_pulses, delivered_pulses) = match water {
+                    Water::Active { sub: ActiveSub::FlowActive, start_pulses, goal, .. } => {
+                        (goal, FLOW_PULSES.load(Ordering::Relaxed).wrapping_sub(start_pulses))
+                    }
+                    Water::Active { goal, .. } => (goal, 0),
+                    _ => (0, 0),
+                };
+                ControlTrace {
+                    mode: mode.trace_code(),
+                    water_state: water.code(),
+                    water_pod: idx_code(water.pod()),
+                    water_cycle: water.cycle(),
+                    dose_ml: last_dose_ml as u16,
+                    pid_i_ml: pid.integral() as u16,
+                    goal_pulses,
+                    delivered_pulses,
+                    pump: pump.is_set_high(),
+                    valve: core::array::from_fn(|i| valves[i].is_set_high()),
+                    led: led_hmi.is_set_high(),
+                    low_water,
+                    fault: fault_code(water_fault),
+                    fault_pod: idx_code(water_fault.map(|f| f.pod())),
+                    save_failed,
+                    overruns,
+                    moisture_reads,
+                    raw: raw_last,
+                    moist: moisture,
+                    detected,
+                    usable: hygro_ok,
+                    log_dropped: trace_out::dropped(),
+                }
+                .frame(uptime_ms, &mut trace_line);
+                send_trace(&trace_line);
+            }
+
+            // 1 s: clock, flow, lights, user settings (same tick as the 1 s task)
+            if n % 100 == 7 {
+                SlowTrace {
+                    uptime_s: seconds,
+                    tod_s: (seconds % SECONDS_PER_DAY + clock_offset) % SECONDS_PER_DAY,
+                    clock_set,
+                    flow: (flow_lpm * 1000.0) as u32,
+                    total_ml: pulses_to_ml(FLOW_PULSES.load(Ordering::Relaxed)),
+                    light: core::array::from_fn(|i| lights[i].is_set_high()),
+                    target: core::array::from_fn(|i| {
+                        let (r, p) = row_plant(i);
+                        plants[r][p].0
+                    }),
+                    light_h: core::array::from_fn(|i| {
+                        let (r, p) = row_plant(i);
+                        light_hours(plants[r][p].1) as u8
+                    }),
+                    water_time_min: water_time.0 as u16 * 60 + water_time.1 as u16,
+                    water_run_due,
+                }
+                .frame(uptime_ms, &mut trace_line);
+                send_trace(&trace_line);
+            }
 
             // Overrun check: this cycle ran past its 10 ms slot
             if skip_overrun {

@@ -66,6 +66,42 @@ pub enum Water {
     Hold { idx: usize, cycle: u8, start_s: u32, reads: u32, last: Option<u8>, steady: u8, next_sample_s: u32 },
 }
 
+impl Water {
+    /// Code for the trace: 0 standby, 1 evaluate, 2 pre-control, 3 flow active, 4 slowdown, 5 hold
+    pub fn code(&self) -> u8 {
+        match self {
+            Water::Standby => 0,
+            Water::Evaluate { .. } => 1,
+            Water::Active { sub: ActiveSub::PreControl, .. } => 2,
+            Water::Active { sub: ActiveSub::FlowActive, .. } => 3,
+            Water::Slowdown { .. } => 4,
+            Water::Hold { .. } => 5,
+        }
+    }
+
+    /// Plant slot being worked on, if any
+    pub fn pod(&self) -> Option<usize> {
+        match *self {
+            Water::Standby => None,
+            Water::Evaluate { idx, .. }
+            | Water::Active { idx, .. }
+            | Water::Slowdown { idx, .. }
+            | Water::Hold { idx, .. } => Some(idx),
+        }
+    }
+
+    /// Doses given to that pod so far (0 in standby)
+    pub fn cycle(&self) -> u8 {
+        match *self {
+            Water::Standby => 0,
+            Water::Evaluate { cycle, .. }
+            | Water::Active { cycle, .. }
+            | Water::Slowdown { cycle, .. }
+            | Water::Hold { cycle, .. } => cycle,
+        }
+    }
+}
+
 /// PID state for the pod being watered (reset for each pod)
 #[derive(Clone, Copy, Debug)]
 pub struct Pid {
@@ -76,6 +112,11 @@ pub struct Pid {
 impl Pid {
     pub const fn new() -> Self {
         Pid { integral: 0.0, last_meas: None }
+    }
+
+    /// Integral term in mL (for the trace)
+    pub fn integral(&self) -> f32 {
+        self.integral
     }
 
     /// One PID step: returns the dose in mL.
@@ -138,6 +179,27 @@ pub fn next_pod(from: usize, hygro_ok: &[bool; SENSORS], pid: &mut Pid) -> Water
 pub enum Fault {
     NoFlow(usize),     // pump ran but the flow meter saw nothing
     NotReached(usize), // max cycles used and still below target
+}
+
+impl Fault {
+    /// Code for the trace: 1 no flow, 2 not reached (0 = no fault, see `fault_code`)
+    pub fn code(&self) -> u8 {
+        match self {
+            Fault::NoFlow(_) => 1,
+            Fault::NotReached(_) => 2,
+        }
+    }
+
+    pub fn pod(&self) -> usize {
+        match *self {
+            Fault::NoFlow(idx) | Fault::NotReached(idx) => idx,
+        }
+    }
+}
+
+/// Trace code of an optional fault: 0 = none
+pub fn fault_code(fault: Option<Fault>) -> u8 {
+    fault.map_or(0, |f| f.code())
 }
 
 #[cfg(test)]
@@ -215,6 +277,43 @@ mod tests {
             let pulse_ml = (1000.0 / P_FLOW_PULSES_PER_L) as u32 + 1;
             assert!(ml.abs_diff(back) <= pulse_ml, "{ml} mL -> {back} mL");
         }
+    }
+
+    // ---- trace codes ----
+    #[test]
+    fn water_codes_are_distinct_and_in_order() {
+        let states = [
+            Water::Standby,
+            Water::Evaluate { idx: 1, cycle: 2 },
+            Water::Active { idx: 1, cycle: 2, sub: ActiveSub::PreControl, start_n: 0, start_s: 0, start_pulses: 0, goal: 0 },
+            Water::Active { idx: 1, cycle: 2, sub: ActiveSub::FlowActive, start_n: 0, start_s: 0, start_pulses: 0, goal: 0 },
+            Water::Slowdown { idx: 1, cycle: 2, start_n: 0, end: RunEnd::Done },
+            Water::Hold { idx: 1, cycle: 2, start_s: 0, reads: 0, last: None, steady: 0, next_sample_s: 0 },
+        ];
+        for (i, w) in states.iter().enumerate() {
+            assert_eq!(w.code() as usize, i, "{w:?}");
+        }
+        assert_eq!(Water::Standby.pod(), None);
+        assert_eq!(Water::Standby.cycle(), 0);
+        for w in &states[1..] {
+            assert_eq!((w.pod(), w.cycle()), (Some(1), 2), "{w:?}");
+        }
+    }
+
+    #[test]
+    fn fault_codes() {
+        assert_eq!(fault_code(None), 0);
+        assert_eq!(fault_code(Some(Fault::NoFlow(4))), 1);
+        assert_eq!(fault_code(Some(Fault::NotReached(4))), 2);
+        assert_eq!(Fault::NotReached(4).pod(), 4);
+    }
+
+    #[test]
+    fn pid_integral_starts_at_zero_and_grows() {
+        let mut pid = Pid::new();
+        assert_eq!(pid.integral(), 0.0);
+        pid.update(10.0, 40.0);
+        assert!(pid.integral() > 0.0 || P_PID_KI == 0.0);
     }
 
     // ---- next_pod ----

@@ -36,3 +36,6 @@ jobs:
 
       - name: Firmware builds for the STM32
         run: cargo build --release
+
+      - name: Trace tools (Python) have no syntax errors
+        run: python3 -m py_compile tools/trace_record.py tools/trace_plot.py

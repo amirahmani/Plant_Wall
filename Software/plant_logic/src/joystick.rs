@@ -11,6 +11,19 @@ pub enum Dir {
     Right,
 }
 
+impl Dir {
+    /// Code for the trace: 0 center, 1 up, 2 down, 3 left, 4 right
+    pub fn code(self) -> u8 {
+        match self {
+            Dir::Center => 0,
+            Dir::Up => 1,
+            Dir::Down => 2,
+            Dir::Left => 3,
+            Dir::Right => 4,
+        }
+    }
+}
+
 // Joystick center learned by RELEARN: readings are shifted so the learned
 // center becomes 2048 before the P_Joystick_LOW / HIGH thresholds are applied.
 pub const JOY_IDEAL_CENTER: u16 = 2048;
@@ -44,6 +57,14 @@ mod tests {
     use super::*;
 
     const C: u16 = JOY_IDEAL_CENTER;
+
+    #[test]
+    fn dir_codes_match_the_trace_docs() {
+        let dirs = [Dir::Center, Dir::Up, Dir::Down, Dir::Left, Dir::Right];
+        for (i, d) in dirs.iter().enumerate() {
+            assert_eq!(d.code() as usize, i);
+        }
+    }
 
     #[test]
     fn resting_stick_is_center() {

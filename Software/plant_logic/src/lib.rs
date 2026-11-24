@@ -6,6 +6,8 @@
 //!
 //!   cargo test-logic        (alias in .cargo/config.toml)
 //!
+//! The list of traced signals (what gets logged while running) is in signals.rs.
+//!
 //! The firmware crate (`firmware/`) does the hardware work and calls into here.
 //! Rule of thumb when adding code: if a function doesn't need a peripheral,
 //! put it here and write a test for it.
@@ -26,6 +28,8 @@ pub mod packing;
 pub mod plant;
 pub mod record;
 pub mod sensors;
+pub mod signals;
+pub mod trace;
 
 // Re-export everything so the firmware can simply `use plant_logic::*;`
 pub use control::*;
@@ -36,6 +40,7 @@ pub use packing::*;
 pub use plant::*;
 pub use record::{decode, encode, CELLS, EXTRA, RECORD_SIZE};
 pub use sensors::*;
+pub use signals::*;
 
 use params::*;
 
