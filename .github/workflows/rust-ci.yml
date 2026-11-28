@@ -1,0 +1,41 @@
+# Unit tests + firmware build for the Rust code in Software/.
+# Runs on every push and pull request that touches the software.
+# A red X on the commit means a step failed: click it to see which test broke.
+name: Rust CI
+
+on:
+  push:
+    paths: ["Software/**", ".github/workflows/rust-ci.yml"]
+  pull_request:
+    paths: ["Software/**", ".github/workflows/rust-ci.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: Software
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      # Cache downloaded crates and build output between runs (faster CI)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Software
+
+      - name: Unit tests (plant_logic, run on the CI machine)
+        run: cargo test-logic
+
+      - name: Firmware builds for the STM32
+        run: cargo build --release
+
+      - name: Trace tools (Python) have no syntax errors
+        run: python3 -m py_compile tools/trace_record.py tools/trace_plot.py

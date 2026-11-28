@@ -1,20 +1,12 @@
-[package]
-name = "led_blink"
-version = "0.1.0"
-edition = "2024"
+# Workspace: two crates that build together.
+#   firmware/     the STM32 program (pins, ADC, LCD, flash, main loop)
+#   plant_logic/  pure logic with no hardware dependencies, unit-tested on the PC
+[workspace]
+members = ["firmware", "plant_logic"]
+default-members = ["firmware"]   # plain `cargo build` / `cargo run` = the firmware, as before
+resolver = "3"
 
-[[bin]]
-name = "led_blink"
-test = false
-bench = false
-
-[dependencies]
-cortex-m = "0.7"
-cortex-m-rt = "0.7"
-embedded-hal = "1.0"
-panic-halt = "0.2"
-stm32f4xx-hal = { version = "0.23.0", features = ["stm32f446"] }
-
+# Profiles must live in the workspace root
 [profile.dev]
 panic = "abort"
 
