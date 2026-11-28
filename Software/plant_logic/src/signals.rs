@@ -35,10 +35,16 @@ signal_group! {
 signal_group! {
     /// Control loop, outputs and sensors, every 100 ms (after the watering step).
     ///
-    /// `mode`:        0 browse, 1 edit, 2 menu, 3 relearn, 4 relearn result,
-    ///                5 sys check, 6 sys result, 7 calibrate, 8 set time, 9 profile
+    /// `mode`:        0 main screen, (1 unused), 2 menu, 3 relearn, 4 relearn result,
+    ///                5 sys check, 6 sys result, 7 calibrate, 8 set time, 9 profile,
+    ///                10 time menu, 11 faults, 12 manual, 13 learn pick, 14 learning,
+    ///                15 learn result
     /// `water_state`: 0 standby, 1 evaluate, 2 pre-control, 3 flow active, 4 slowdown, 5 hold
-    /// `fault`:       0 none, 1 no flow, 2 not reached
+    /// `fault_top`:   most severe active fault, 0 none, else position in FAULT_KINDS + 1:
+    ///                1 leak, 2 no flow, 3 low water, 4 valve bad, 5 save fail,
+    ///                6 not wet, 7 no sensor, 8 learn fail, 9 overrun, 10 no clock
+    /// `learn`:       pot learning phase: 0 off, 1 start, 2 pressure, 3 dose,
+    ///                4 slowdown, 5 soak, 6 done
     pub struct ControlTrace, tag = b'C', period_ms = 100 {
         mode: u8, "enum";                  // HMI screen
         water_state: u8, "enum";           // watering state machine
@@ -52,8 +58,11 @@ signal_group! {
         valve: [bool; VALVES], "bool";     // valve outputs
         led: bool, "bool";                 // case LED output
         low_water: bool, "bool";           // debounced LOW WATER warning
-        fault: u8, "enum";                 // last watering fault
-        fault_pod: u8, "idx";              // plant slot of that fault (255 = none)
+        fault_top: u8, "enum";             // most severe active fault
+        fault_pod: u8, "idx";              // plant slot of that fault (255 = none / system fault)
+        faults: u8, "count";               // active faults
+        learn: u8, "enum";                 // pot learning phase
+        learn_pod: u8, "idx";              // plant slot being learned (255 = none)
         save_failed: bool, "bool";         // last flash save failed
         overruns: u32, "count";            // 10 ms ticks that ran too long, since power-on
         moisture_reads: u32, "count";      // completed hygrometer readings
@@ -76,6 +85,7 @@ signal_group! {
         light: [bool; LIGHTS], "bool";     // grow light outputs
         target: [u8; PLANT_SLOTS], "%";    // user water target per plant slot (0 = OFF)
         light_h: [u8; PLANT_SLOTS], "h";   // user light hours per plant slot
+        pot: [u8; PLANT_SLOTS], "mL/%";    // pot size used for dosing (learned or default)
         water_time_min: u16, "min";        // daily water time, minutes after midnight
         water_run_due: bool, "bool";       // a watering run is waiting to start
     }
@@ -164,8 +174,11 @@ mod tests {
             pid_i_ml: u16::MAX,
             goal_pulses: u32::MAX,
             delivered_pulses: u32::MAX,
-            fault: u8::MAX,
+            fault_top: u8::MAX,
             fault_pod: u8::MAX,
+            faults: u8::MAX,
+            learn: u8::MAX,
+            learn_pod: u8::MAX,
             overruns: u32::MAX,
             moisture_reads: u32::MAX,
             raw: [u16::MAX; SENSORS],

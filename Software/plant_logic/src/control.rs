@@ -29,8 +29,12 @@
 //!   P = P_PID_KP * error
 //!   I = sum of P_PID_KI * error over this pod's cycles, kept in 0..=P_PID_I_MAX (anti-windup)
 //!   D = -P_PID_KD * (moisture change since the last cycle)   (on measurement: no kick)
-//!   dose = P + I + D, clamped to P_DOSE_MIN_ML..=P_DOSE_MAX_ML
+//!   dose = (P + I + D) * pot / P_ML_PER_PCT, clamped to P_DOSE_MIN_ML..=P_DOSE_MAX_ML
 //! ```
+//!
+//! `pot` = that pod's mL per % (learned in RELEARN, else P_POT_ML_PER_PCT):
+//! the gains are tuned for a P_ML_PER_PCT pot, and a pot twice that size gets
+//! twice the water for the same error.
 //!
 //! The pod counts as done once error <= P_DEADBAND_PCT. Water can only be added,
 //! so the integral never goes negative. The PID resets for each pod.
@@ -119,15 +123,16 @@ impl Pid {
         self.integral
     }
 
-    /// One PID step: returns the dose in mL.
-    pub fn update(&mut self, error: f32, meas: f32) -> f32 {
+    /// One PID step for a pot of `ml_per_pct`: returns the dose in mL.
+    pub fn update(&mut self, error: f32, meas: f32, ml_per_pct: u8) -> f32 {
         self.integral = (self.integral + P_PID_KI * error).clamp(0.0, P_PID_I_MAX);
         let d = match self.last_meas {
             Some(prev) => -P_PID_KD * (meas - prev),
             None => 0.0, // first cycle: no history yet
         };
         self.last_meas = Some(meas);
-        (P_PID_KP * error + self.integral + d).clamp(P_DOSE_MIN_ML, P_DOSE_MAX_ML)
+        let pot_scale = ml_per_pct as f32 / P_ML_PER_PCT;
+        ((P_PID_KP * error + self.integral + d) * pot_scale).clamp(P_DOSE_MIN_ML, P_DOSE_MAX_ML)
     }
 }
 
@@ -139,7 +144,7 @@ pub enum Decision {
     NotReached, // max cycles used and still below target
 }
 
-pub fn decide(target: u8, current: u8, cycle: u8, pid: &mut Pid) -> Decision {
+pub fn decide(target: u8, current: u8, cycle: u8, pid: &mut Pid, ml_per_pct: u8) -> Decision {
     if target == 0 {
         return Decision::Done; // OFF: never watered automatically
     }
@@ -150,7 +155,7 @@ pub fn decide(target: u8, current: u8, cycle: u8, pid: &mut Pid) -> Decision {
     if cycle >= P_MAX_CYCLES {
         return Decision::NotReached;
     }
-    Decision::Dose(pid.update(error, current as f32))
+    Decision::Dose(pid.update(error, current as f32, ml_per_pct))
 }
 
 /// mL -> flow meter pulses (at least 1)
@@ -175,69 +180,102 @@ pub fn next_pod(from: usize, hygro_ok: &[bool; SENSORS], pid: &mut Pid) -> Water
     }
 }
 
+/// What the main screen shows in its state column (SM) for one plant
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Fault {
-    NoFlow(usize),     // pump ran but the flow meter saw nothing
-    NotReached(usize), // max cycles used and still below target
+pub enum PodState {
+    Missing,  // "--" pod not installed (sensor not plugged in / not calibrated)
+    Learning, // "LN" pot learning running on this pod
+    Watering, // "WT" being watered right now
+    Soaking,  // "SK" watered, waiting for the reading to settle
+    Fault,    // "FL" has an active fault (see MENU > FAULTS)
+    Off,      // "OF" target OFF: never watered automatically
+    Low,      // "LO" drier than target: will be watered at the next watering time
+    Ok,       // "OK" at target
 }
 
-impl Fault {
-    /// Code for the trace: 1 no flow, 2 not reached (0 = no fault, see `fault_code`)
-    pub fn code(&self) -> u8 {
+impl PodState {
+    pub fn text(self) -> &'static str {
         match self {
-            Fault::NoFlow(_) => 1,
-            Fault::NotReached(_) => 2,
-        }
-    }
-
-    pub fn pod(&self) -> usize {
-        match *self {
-            Fault::NoFlow(idx) | Fault::NotReached(idx) => idx,
+            PodState::Missing => "--",
+            PodState::Learning => "LN",
+            PodState::Watering => "WT",
+            PodState::Soaking => "SK",
+            PodState::Fault => "FL",
+            PodState::Off => "OF",
+            PodState::Low => "LO",
+            PodState::Ok => "OK",
         }
     }
 }
 
-/// Trace code of an optional fault: 0 = none
-pub fn fault_code(fault: Option<Fault>) -> u8 {
-    fault.map_or(0, |f| f.code())
+/// State of plant slot `idx` for the main screen, most important first.
+pub fn pod_state(
+    idx: usize,
+    installed: bool,
+    target: u8,
+    moisture: u8,
+    water: &Water,
+    learning: bool,
+    has_fault: bool,
+) -> PodState {
+    if !installed {
+        PodState::Missing
+    } else if learning {
+        PodState::Learning
+    } else if water.pod() == Some(idx) && matches!(water, Water::Hold { .. }) {
+        PodState::Soaking
+    } else if water.pod() == Some(idx) {
+        PodState::Watering
+    } else if has_fault {
+        PodState::Fault
+    } else if target == 0 {
+        PodState::Off
+    } else if (moisture as i16) < target as i16 - P_DEADBAND_PCT as i16 {
+        PodState::Low
+    } else {
+        PodState::Ok
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The pot size the PID gains are tuned for
+    const REF: u8 = P_ML_PER_PCT as u8;
+
     // ---- decide ----
     #[test]
     fn off_pod_is_never_watered() {
-        assert_eq!(decide(0, 10, 0, &mut Pid::new()), Decision::Done);
+        assert_eq!(decide(0, 10, 0, &mut Pid::new(), REF), Decision::Done);
     }
 
     #[test]
     fn inside_deadband_is_done() {
-        assert_eq!(decide(50, 50 - P_DEADBAND_PCT, 0, &mut Pid::new()), Decision::Done);
+        assert_eq!(decide(50, 50 - P_DEADBAND_PCT, 0, &mut Pid::new(), REF), Decision::Done);
     }
 
     #[test]
     fn wetter_than_target_is_done() {
-        assert_eq!(decide(50, 80, 0, &mut Pid::new()), Decision::Done);
+        assert_eq!(decide(50, 80, 0, &mut Pid::new(), REF), Decision::Done);
     }
 
     #[test]
     fn just_outside_deadband_gets_water() {
-        let d = decide(50, 50 - P_DEADBAND_PCT - 1, 0, &mut Pid::new());
+        let d = decide(50, 50 - P_DEADBAND_PCT - 1, 0, &mut Pid::new(), REF);
         assert!(matches!(d, Decision::Dose(_)), "got {d:?}");
     }
 
     #[test]
     fn too_many_cycles_is_a_fault() {
-        assert_eq!(decide(50, 10, P_MAX_CYCLES, &mut Pid::new()), Decision::NotReached);
+        assert_eq!(decide(50, 10, P_MAX_CYCLES, &mut Pid::new(), REF), Decision::NotReached);
     }
 
     // ---- PID ----
     #[test]
     fn dose_is_always_within_limits() {
         for current in 0..=90u8 {
-            if let Decision::Dose(ml) = decide(90, current, 0, &mut Pid::new()) {
+            if let Decision::Dose(ml) = decide(90, current, 0, &mut Pid::new(), REF) {
                 assert!(ml >= P_DOSE_MIN_ML && ml <= P_DOSE_MAX_ML, "dose {ml} at {current}%");
             }
         }
@@ -248,7 +286,7 @@ mod tests {
         // Even if the soil never gets wetter, the integral must not wind up past the limits
         let mut pid = Pid::new();
         for _ in 0..1000 {
-            let ml = pid.update(90.0, 0.0);
+            let ml = pid.update(90.0, 0.0, 250);
             assert!(ml >= P_DOSE_MIN_ML && ml <= P_DOSE_MAX_ML, "dose {ml}");
         }
     }
@@ -257,8 +295,8 @@ mod tests {
     fn repeated_shortfall_never_lowers_the_dose() {
         // Same reading twice: the integral grows, so the second dose is at least as big
         let mut pid = Pid::new();
-        let first = pid.update(5.0, 45.0);
-        let second = pid.update(5.0, 45.0);
+        let first = pid.update(5.0, 45.0, REF);
+        let second = pid.update(5.0, 45.0, REF);
         assert!(second >= first, "{second} < {first}");
     }
 
@@ -300,19 +338,66 @@ mod tests {
         }
     }
 
+    // ---- pot size ----
     #[test]
-    fn fault_codes() {
-        assert_eq!(fault_code(None), 0);
-        assert_eq!(fault_code(Some(Fault::NoFlow(4))), 1);
-        assert_eq!(fault_code(Some(Fault::NotReached(4))), 2);
-        assert_eq!(Fault::NotReached(4).pod(), 4);
+    fn bigger_pot_gets_more_water() {
+        // A small error, so neither dose hits the min/max limits
+        let small = Pid::new().update(2.0, 40.0, REF);
+        let double = Pid::new().update(2.0, 40.0, REF * 2);
+        if small > P_DOSE_MIN_ML && double < P_DOSE_MAX_ML {
+            assert!((double - 2.0 * small).abs() < 0.01, "{small} mL vs {double} mL");
+        }
+        assert!(double >= small);
+    }
+
+    #[test]
+    fn pot_size_never_breaks_the_dose_limits() {
+        for pot in [1u8, 5, 20, 100, 254] {
+            for error in [1.0f32, 10.0, 90.0] {
+                let ml = Pid::new().update(error, 0.0, pot);
+                assert!(ml >= P_DOSE_MIN_ML && ml <= P_DOSE_MAX_ML, "pot {pot} error {error}: {ml}");
+            }
+        }
+    }
+
+    // ---- main screen state ----
+    fn state(water: Water, installed: bool, target: u8, moisture: u8, learning: bool, fault: bool) -> PodState {
+        pod_state(1, installed, target, moisture, &water, learning, fault)
+    }
+
+    #[test]
+    fn pod_state_examples() {
+        let hold = Water::Hold { idx: 1, cycle: 1, start_s: 0, reads: 0, last: None, steady: 0, next_sample_s: 0 };
+        assert_eq!(state(Water::Standby, false, 50, 50, false, true), PodState::Missing);
+        assert_eq!(state(Water::Evaluate { idx: 1, cycle: 0 }, true, 50, 10, true, false), PodState::Learning);
+        assert_eq!(state(Water::Evaluate { idx: 1, cycle: 0 }, true, 50, 10, false, true), PodState::Watering);
+        assert_eq!(state(hold, true, 50, 10, false, false), PodState::Soaking);
+        assert_eq!(state(Water::Evaluate { idx: 2, cycle: 0 }, true, 50, 10, false, true), PodState::Fault);
+        assert_eq!(state(Water::Standby, true, 0, 10, false, false), PodState::Off);
+        assert_eq!(state(Water::Standby, true, 50, 50 - P_DEADBAND_PCT - 1, false, false), PodState::Low);
+        assert_eq!(state(Water::Standby, true, 50, 50 - P_DEADBAND_PCT, false, false), PodState::Ok);
+        assert_eq!(state(Water::Standby, true, 50, 90, false, false), PodState::Ok);
+    }
+
+    #[test]
+    fn pod_state_texts_are_2_chars_and_distinct() {
+        let all = [
+            PodState::Missing, PodState::Learning, PodState::Watering, PodState::Soaking,
+            PodState::Fault, PodState::Off, PodState::Low, PodState::Ok,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            assert_eq!(a.text().len(), 2);
+            for b in &all[i + 1..] {
+                assert_ne!(a.text(), b.text());
+            }
+        }
     }
 
     #[test]
     fn pid_integral_starts_at_zero_and_grows() {
         let mut pid = Pid::new();
         assert_eq!(pid.integral(), 0.0);
-        pid.update(10.0, 40.0);
+        pid.update(10.0, 40.0, REF);
         assert!(pid.integral() > 0.0 || P_PID_KI == 0.0);
     }
 
@@ -334,10 +419,10 @@ mod tests {
     fn next_pod_resets_the_pid() {
         let mut pid = Pid::new();
         for _ in 0..10 {
-            pid.update(40.0, 10.0);
+            pid.update(40.0, 10.0, REF);
         }
         next_pod(0, &[true; SENSORS], &mut pid);
-        let fresh = Pid::new().update(5.0, 45.0);
-        assert_eq!(pid.update(5.0, 45.0), fresh);
+        let fresh = Pid::new().update(5.0, 45.0, REF);
+        assert_eq!(pid.update(5.0, 45.0, REF), fresh);
     }
 }

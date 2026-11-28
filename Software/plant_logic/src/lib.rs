@@ -22,8 +22,11 @@ pub mod params {
 
 pub mod control;
 pub mod display;
+pub mod faults;
 pub mod joystick;
 pub mod layout;
+pub mod learn;
+pub mod manual;
 pub mod packing;
 pub mod plant;
 pub mod record;
@@ -38,7 +41,10 @@ pub use joystick::*;
 pub use layout::*;
 pub use packing::*;
 pub use plant::*;
-pub use record::{decode, encode, CELLS, EXTRA, RECORD_SIZE};
+pub use faults::*;
+pub use learn::{Learn, LearnError, LearnIn, LearnOut};
+pub use manual::*;
+pub use record::{decode, encode, PAYLOAD, RECORD_SIZE};
 pub use sensors::*;
 pub use signals::*;
 
@@ -58,9 +64,11 @@ const _: () = assert!(P_HOLD_SAMPLE_S > 0, "HOLD_SAMPLE_S must be above 0");
 const _: () = assert!(P_HOLD_STEADY_COUNT > 0, "HOLD_STEADY_COUNT must be at least 1");
 const _: () = assert!(P_HOLD_MAX_S >= P_HOLD_SAMPLE_S, "HOLD_MAX_S must be >= HOLD_SAMPLE_S");
 const _: () = assert!(P_SYSCHK_STEP_MS > 0, "SYSCHK_STEP_MS must be above 0");
-const _: () = assert!(P_LIGHT_HOURS.len() == 3, "LIGHT_HOURS needs LOW, MED, HI");
-const _: () = assert!(
-    P_LIGHT_HOURS[0] <= 24 && P_LIGHT_HOURS[1] <= 24 && P_LIGHT_HOURS[2] <= 24,
-    "LIGHT_HOURS values must be 0..=24"
-);
+const _: () = assert!(P_LIGHT_DEFAULT_H <= 24, "LIGHT_DEFAULT_H must be 0..=24");
+const _: () = assert!(P_WATER_TIME_DEFAULT_H < 24 && P_WATER_TIME_DEFAULT_M < 60, "WATER_TIME_DEFAULT must be a valid time");
+const _: () = assert!(P_POT_ML_PER_PCT > 0 && P_POT_ML_PER_PCT < 255, "POT_ML_PER_PCT must be 1..=254");
+const _: () = assert!(P_ML_PER_PCT > 0.0, "ML_PER_PCT must be above 0");
+const _: () = assert!(P_LEARN_MAX_DOSES > 0, "LEARN_MAX_DOSES must be at least 1");
+const _: () = assert!(P_LEARN_MIN_RISE_PCT > 0, "LEARN_MIN_RISE_PCT must be at least 1");
+const _: () = assert!(P_LEARN_MAX_START_PCT < 100, "LEARN_MAX_START_PCT must leave room to rise");
 const _: () = assert!(P_LIGHT_START_H < 24, "LIGHT_START_H must be 0..=23");

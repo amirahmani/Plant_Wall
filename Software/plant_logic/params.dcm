@@ -104,7 +104,7 @@ FESTWERTEBLOCK P_WATER_STAGES 4
 END
 
 FESTWERT P_ML_PER_PCT
-   LANGNAME "Water needed to raise moisture by 1 percent"
+   LANGNAME "Pot size the PID gains below are tuned for (doses scale with each pod's mL/%)"
    EINHEIT_W "mL/%"
    WERT 10
 END
@@ -271,16 +271,85 @@ END
 * 
 * ---------------------------------------------------------------
 
-FESTWERTEBLOCK P_LIGHT_HOURS 3
-   LANGNAME "Grow light hours per day for Lt LOW, MED, HI"
+FESTWERT P_LIGHT_DEFAULT_H
+   LANGNAME "Grow light hours per day for a plant that was never set in PROFILE"
    EINHEIT_W "h"
-   WERT 8 12 16
+   WERT 12
 END
 
 FESTWERT P_LIGHT_START_H
    LANGNAME "Hour the grow lights turn on each day"
    EINHEIT_W "h"
    WERT 6
+END
+
+* ---------------------------------------------------------------
+*
+* Daily watering time (until one is set in MENU > TIME)
+*
+* ---------------------------------------------------------------
+
+FESTWERT P_WATER_TIME_DEFAULT_H
+   LANGNAME "Default daily watering time, hour"
+   EINHEIT_W "h"
+   WERT 9
+END
+
+FESTWERT P_WATER_TIME_DEFAULT_M
+   LANGNAME "Default daily watering time, minute"
+   EINHEIT_W "min"
+   WERT 0
+END
+
+* ---------------------------------------------------------------
+*
+* Pot learning (MENU > RELEARN > pick a plant)
+* Gives water in steps of P_LEARN_DOSE_ML until the soil reading has risen by
+* at least P_LEARN_MIN_RISE_PCT, then stores mL per % for that pod.
+* A plant that was never learned uses P_POT_ML_PER_PCT.
+*
+* ---------------------------------------------------------------
+
+FESTWERT P_POT_ML_PER_PCT
+   LANGNAME "mL per % moisture for a pod that was never learned (large pot = more mL/%)"
+   EINHEIT_W "mL/%"
+   WERT 20
+END
+
+FESTWERT P_LEARN_DOSE_ML
+   LANGNAME "Water per learning step"
+   EINHEIT_W "mL"
+   WERT 100.0
+END
+
+FESTWERT P_LEARN_MAX_DOSES
+   LANGNAME "Most learning steps before giving up (no rise)"
+   EINHEIT_W "-"
+   WERT 3
+END
+
+FESTWERT P_LEARN_MIN_RISE_PCT
+   LANGNAME "Rise in moisture needed for a usable measurement"
+   EINHEIT_W "%"
+   WERT 3
+END
+
+FESTWERT P_LEARN_MAX_START_PCT
+   LANGNAME "Soil wetter than this can't be learned (no room to rise)"
+   EINHEIT_W "%"
+   WERT 70
+END
+
+* ---------------------------------------------------------------
+*
+* Manual control (MENU > MANUAL)
+*
+* ---------------------------------------------------------------
+
+FESTWERT P_MANUAL_PUMP_MAX_S
+   LANGNAME "Pump switched on by hand turns itself off after this long"
+   EINHEIT_W "s"
+   WERT 30
 END
 
 * ---------------------------------------------------------------

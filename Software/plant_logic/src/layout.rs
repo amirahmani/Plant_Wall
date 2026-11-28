@@ -136,6 +136,22 @@ pub fn next_wired_light(from: usize) -> Option<usize> {
     (from..PLANT_SLOTS).find(|&i| wired_light(i).is_some())
 }
 
+/// Plant slots that exist in the layout, in wall order (R1P1, R1P2, ... R2P1, ...)
+pub fn plant_exists(idx: usize) -> bool {
+    let (r, p) = row_plant(idx);
+    r < ROWS && p < PLANTS_PER_ROW[r]
+}
+
+/// Next plant on the wall after `idx`, wrapping around (main screen scrolling)
+pub fn next_plant(idx: usize) -> usize {
+    (1..=PLANT_SLOTS).map(|k| (idx + k) % PLANT_SLOTS).find(|&i| plant_exists(i)).unwrap_or(0)
+}
+
+/// Plant before `idx`, wrapping around
+pub fn prev_plant(idx: usize) -> usize {
+    (1..=PLANT_SLOTS).map(|k| (idx + PLANT_SLOTS - k) % PLANT_SLOTS).find(|&i| plant_exists(i)).unwrap_or(0)
+}
+
 /// i-th line on the CALIBRATE screen: (row, plant, sensor), in wall order.
 pub fn cal_entry(i: usize) -> Option<(usize, usize, usize)> {
     (0..PLANT_SLOTS)
@@ -215,6 +231,21 @@ mod tests {
                     assert!(seen[l]);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn scrolling_visits_every_plant_and_wraps() {
+        let count = (0..PLANT_SLOTS).filter(|&i| plant_exists(i)).count();
+        let mut i = 0;
+        for _ in 0..count {
+            i = next_plant(i);
+            assert!(plant_exists(i));
+        }
+        assert_eq!(i, 0, "{count} steps forward should come back to the start");
+        assert_eq!(prev_plant(0), PLANT_SLOTS - 1); // R1P1 back to R2P3 on the 2 x 3 wall
+        for i in (0..PLANT_SLOTS).filter(|&i| plant_exists(i)) {
+            assert_eq!(prev_plant(next_plant(i)), i);
         }
     }
 

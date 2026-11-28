@@ -10,7 +10,7 @@
 //! all 2048 slots are used. Each record has a checksum, so a save cut off by a
 //! power loss is ignored and the previous one is used instead.
 
-use plant_logic::record::{decode, encode, CELLS, EXTRA, RECORD_SIZE};
+use plant_logic::record::{decode, encode, PAYLOAD, RECORD_SIZE};
 use stm32f4xx_hal::{flash::FlashExt, pac::FLASH};
 
 // The record byte format (magic, version, checksum, ...) is in plant_logic/src/record.rs,
@@ -27,9 +27,9 @@ pub struct Store {
 }
 
 impl Store {
-    /// Scan the sector. Returns the store and the newest saved (cells, extra, version),
+    /// Scan the sector. Returns the store and the newest saved (payload, version),
     /// or None if nothing valid has been saved yet.
-    pub fn open(flash: FLASH, tag: u8) -> (Self, Option<([u8; CELLS], [u8; EXTRA], u8)>) {
+    pub fn open(flash: FLASH, tag: u8) -> (Self, Option<([u8; PAYLOAD], u8)>) {
         let mut latest = None;
         let mut next_slot = SLOTS;
         {
@@ -52,8 +52,8 @@ impl Store {
 
     /// Append one record. Returns false if the flash reported an error.
     /// Normally takes a few ms; once every 2048 saves the sector is erased first (1-2 s).
-    pub fn save(&mut self, cells: &[u8; CELLS], extra: &[u8; EXTRA]) -> bool {
-        let rec = encode(cells, extra, self.tag);
+    pub fn save(&mut self, payload: &[u8; PAYLOAD]) -> bool {
+        let rec = encode(payload, self.tag);
         let mut unlocked = self.flash.unlocked(); // re-locks when dropped
         if self.next_slot >= SLOTS {
             if unlocked.erase(SECTOR).is_err() {

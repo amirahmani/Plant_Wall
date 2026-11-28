@@ -1,4 +1,5 @@
-//! Per-plant user settings: water target and light level, and the daily light window.
+//! Per-plant user settings (set in MENU > PROFILE): water target, light hours,
+//! and the pot size learned in MENU > RELEARN. Plus the daily light window.
 
 use crate::params::*;
 
@@ -11,6 +12,34 @@ pub const WATER_STEP: u8 = 10;
 pub const WATER_MAX: u8 = 90;
 pub const WATER_DEFAULT: u8 = 50;
 
+// Light setting = hours of grow light per day, 0 (OFF) to 24, in 1 h steps.
+pub const LIGHT_MAX_H: u8 = 24;
+
+/// Pot size: mL of water that raise the soil reading by 1 %.
+/// 0 = never learned: P_POT_ML_PER_PCT is used.
+pub const POT_UNLEARNED: u8 = 0;
+
+/// Everything the user sets for one plant.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PlantCfg {
+    pub water: u8,      // target moisture %, 0 = OFF
+    pub light_h: u8,    // grow light hours per day, 0 = OFF
+    pub ml_per_pct: u8, // learned pot size, POT_UNLEARNED = use the default
+}
+
+impl PlantCfg {
+    pub const DEFAULT: PlantCfg = PlantCfg { water: WATER_DEFAULT, light_h: P_LIGHT_DEFAULT_H, ml_per_pct: POT_UNLEARNED };
+
+    /// Pot size used for dosing: learned, or the default for a large pot
+    pub fn pot_ml_per_pct(&self) -> u8 {
+        if self.ml_per_pct == POT_UNLEARNED {
+            P_POT_ML_PER_PCT
+        } else {
+            self.ml_per_pct
+        }
+    }
+}
+
 /// Target one step up, stops at WATER_MAX
 pub fn water_up(target: u8) -> u8 {
     (target + WATER_STEP).min(WATER_MAX)
@@ -21,38 +50,14 @@ pub fn water_down(target: u8) -> u8 {
     target.saturating_sub(WATER_STEP)
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum LightLevel {
-    Low,
-    Med,
-    High,
+/// Light one hour more, stops at 24 h
+pub fn light_up(hours: u8) -> u8 {
+    (hours + 1).min(LIGHT_MAX_H)
 }
 
-// Lt levels are hours of light per day: Low/Med/High = P_LIGHT_HOURS[0/1/2]
-// (6 / 10 / 14 h). Shown on the LCD as hours, see light_hours().
-impl LightLevel {
-    pub fn up(self) -> Self {
-        match self {
-            LightLevel::Low => LightLevel::Med,
-            LightLevel::Med | LightLevel::High => LightLevel::High,
-        }
-    }
-
-    pub fn down(self) -> Self {
-        match self {
-            LightLevel::High => LightLevel::Med,
-            LightLevel::Med | LightLevel::Low => LightLevel::Low,
-        }
-    }
-}
-
-/// Hours of light per day the user's Lt setting asks for.
-pub fn light_hours(level: LightLevel) -> u32 {
-    match level {
-        LightLevel::Low => P_LIGHT_HOURS[0] as u32,
-        LightLevel::Med => P_LIGHT_HOURS[1] as u32,
-        LightLevel::High => P_LIGHT_HOURS[2] as u32,
-    }
+/// Light one hour less, stops at 0 (OFF)
+pub fn light_down(hours: u8) -> u8 {
+    hours.saturating_sub(1)
 }
 
 /// Is `now` (seconds into the day) inside the daily window that starts at
@@ -61,74 +66,9 @@ pub fn in_daily_window(now: u32, start: u32, len: u32) -> bool {
     (now + SECONDS_PER_DAY - start) % SECONDS_PER_DAY < len
 }
 
-/// A preset for one type of plant. Picked in MENU > PROFILE, it sets the
-/// selected plant's water target and light level in one go; both can still be
-/// fine-tuned afterwards in the normal edit screen.
-/// Water is the target soil moisture % (same scale as the edit screen), so
-/// these are starting points: tune them once the sensors are calibrated.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Profile {
-    pub name: &'static str, // up to PROFILE_NAME_MAX characters (LCD space)
-    pub water: u8,
-    pub light: LightLevel,
-}
-
-pub const PROFILE_NAME_MAX: usize = 8;
-
-/// Add or change profiles here. `cargo test-logic` checks they fit the LCD,
-/// use valid water steps and are all different.
-pub const PROFILES: [Profile; 6] = [
-    Profile { name: "HERBS", water: 50, light: LightLevel::High },    // basil, mint, parsley
-    Profile { name: "GREENS", water: 70, light: LightLevel::High },   // lettuce, spinach
-    Profile { name: "FLOWERS", water: 60, light: LightLevel::High },
-    Profile { name: "TROPICAL", water: 60, light: LightLevel::Med },  // pothos, philodendron
-    Profile { name: "FERN", water: 70, light: LightLevel::Low },
-    Profile { name: "CACTUS", water: 20, light: LightLevel::High },   // and succulents
-];
-
-/// Index of the profile these settings match, if any (the PROFILE list starts there).
-pub fn profile_of(water: u8, light: LightLevel) -> Option<usize> {
-    PROFILES.iter().position(|p| p.water == water && p.light == light)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- profiles ----
-    #[test]
-    fn profile_names_fit_the_lcd() {
-        for p in PROFILES {
-            assert!(!p.name.is_empty() && p.name.len() <= PROFILE_NAME_MAX, "{:?}", p);
-            assert!(p.name.bytes().all(|b| b.is_ascii_uppercase() || b == b' '), "{:?}", p);
-        }
-    }
-
-    #[test]
-    fn profile_water_is_a_valid_setting() {
-        // Must be a value the edit screen can also reach, and not OFF
-        for p in PROFILES {
-            assert!(p.water > 0 && p.water <= WATER_MAX && p.water % WATER_STEP == 0, "{:?}", p);
-        }
-    }
-
-    #[test]
-    fn profiles_are_all_different() {
-        for (i, a) in PROFILES.iter().enumerate() {
-            for b in &PROFILES[i + 1..] {
-                assert_ne!(a.name, b.name);
-                assert!(a.water != b.water || a.light != b.light, "{} and {} are the same", a.name, b.name);
-            }
-        }
-    }
-
-    #[test]
-    fn settings_find_their_profile() {
-        for (i, p) in PROFILES.iter().enumerate() {
-            assert_eq!(profile_of(p.water, p.light), Some(i));
-        }
-        assert_eq!(profile_of(0, LightLevel::Low), None); // OFF matches nothing
-    }
 
     const H: u32 = 3600;
 
@@ -145,16 +85,23 @@ mod tests {
     }
 
     #[test]
-    fn light_level_stops_at_the_ends() {
-        assert_eq!(LightLevel::Low.down(), LightLevel::Low);
-        assert_eq!(LightLevel::Low.up(), LightLevel::Med);
-        assert_eq!(LightLevel::High.up(), LightLevel::High);
+    fn light_steps_one_hour_between_off_and_24() {
+        assert_eq!(light_up(12), 13);
+        assert_eq!(light_up(LIGHT_MAX_H), LIGHT_MAX_H);
+        assert_eq!(light_down(1), 0); // OFF
+        assert_eq!(light_down(0), 0);
     }
 
     #[test]
-    fn more_light_level_means_more_hours() {
-        assert!(light_hours(LightLevel::Low) <= light_hours(LightLevel::Med));
-        assert!(light_hours(LightLevel::Med) <= light_hours(LightLevel::High));
+    fn new_plant_starts_at_12_h_light_and_the_default_pot() {
+        assert_eq!(PlantCfg::DEFAULT.light_h, 12);
+        assert_eq!(PlantCfg::DEFAULT.pot_ml_per_pct(), P_POT_ML_PER_PCT);
+    }
+
+    #[test]
+    fn learned_pot_size_replaces_the_default() {
+        let cfg = PlantCfg { ml_per_pct: 7, ..PlantCfg::DEFAULT };
+        assert_eq!(cfg.pot_ml_per_pct(), 7);
     }
 
     #[test]
